@@ -11,14 +11,17 @@ import '../../data/models/piece_record.dart';
 import '../../data/models/toy.dart';
 import '../../data/models/worker.dart';
 import '../../domain/holidays/cn_holidays.dart';
+import '../../domain/pinyin/pinyin_helper.dart';
 import '../../domain/rules/backfill_rules.dart';
 import '../../domain/rules/overtime_rules.dart';
+import '../../domain/rules/pager.dart';
 import '../../domain/rules/price_rules.dart';
 import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
 import '../../state/selection_state.dart';
 import '../common/date_picker_sheet.dart';
 import '../common/picker.dart';
+import '../common/search_field.dart';
 import '../common/ui_kit.dart';
 import '../theme.dart';
 import 'adjustment_sheet.dart';
@@ -38,6 +41,9 @@ class _CountPageState extends State<CountPage> {
   final TextEditingController _quantity = TextEditingController();
   final TextEditingController _remark = TextEditingController();
   final TextEditingController _manualPrice = TextEditingController();
+
+  /// 流水查找框：按工人姓名 / 工号筛当天的流水。
+  final TextEditingController _flowSearch = TextEditingController();
   final FocusNode _quantityFocus = FocusNode();
 
   AppServices? _services;
@@ -60,6 +66,18 @@ class _CountPageState extends State<CountPage> {
 
   /// 当天所在月份里「整月已标记结算」的工人，给流水行打结算标签用。
   Set<String> _settledWorkers = const {};
+
+  /// 工人 id → 工号。流水只存了姓名快照，按工号查找要靠档案补。
+  Map<String, String> _workerCodes = const {};
+
+  /// 流水每页条数（10 / 20 / 50），默认 20。
+  int _pageSize = Pager.defaultPageSize;
+
+  /// 流水当前页（从 0 开始）。
+  ///
+  /// 它是**用户态**：改页码、改每页条数、改查找词、换日期都会让它失效。
+  /// 所以每次都由 [Pager] 收敛一次，绝不直接拿去当下标。
+  int _pageIndex = 0;
 
   /// 录入时直接标记已结算（默认未结算）。
   bool _settledOnEntry = false;
@@ -95,6 +113,7 @@ class _CountPageState extends State<CountPage> {
     _quantity.dispose();
     _remark.dispose();
     _manualPrice.dispose();
+    _flowSearch.dispose();
     _quantityFocus.dispose();
     super.dispose();
   }
@@ -119,6 +138,9 @@ class _CountPageState extends State<CountPage> {
       });
     }
     if (_loadedDate != widget.selection.date) {
+      // 换了业务日期就是另一批流水：页码必须回到第一页，
+      // 否则「昨天在第 4 页、今天只有 1 页」会直接落在空白页上。
+      _pageIndex = 0;
       _reload();
     } else {
       setState(() {});
@@ -147,7 +169,12 @@ class _CountPageState extends State<CountPage> {
     _loadedDate = date;
     if (mounted) setState(() => _loading = true);
 
-    final workers = await services.workers.listActive();
+    // 一次取全量档案：在用的给选择器，全部（含已停用）用来按工号反查流水。
+    // 已停用的工人历史账还在，按工号查找时不能查不到。
+    final allWorkers = await services.workers.listAll();
+    final workers = allWorkers
+        .where((worker) => !worker.isArchived)
+        .toList(growable: false);
     final toys = await services.toys.listActive();
     final allToys = await services.toys.listAll();
     final records = await services.records.listByDate(date);
@@ -166,6 +193,9 @@ class _CountPageState extends State<CountPage> {
     setState(() {
       _workers = workers;
       _toys = toys;
+      _workerCodes = {
+        for (final worker in allWorkers) worker.id: worker.code,
+      };
       _basePrices = {
         for (final toy in allToys) toy.id: toy.unitPriceTenThousandth,
       };
@@ -548,6 +578,49 @@ class _CountPageState extends State<CountPage> {
     }
   }
 
+  /// 是否命中查找条件（姓名 / 工号 / 拼音首字母）。
+  ///
+  /// 工号从档案表补：流水里只存了姓名快照，没有工号，
+  /// 但车间里喊人常用工号（"W012 那笔"），查找必须两种都认。
+  bool _matchesFlowQuery(PieceRecord record, String query) {
+    if (query.isEmpty) return true;
+    return PinyinHelper.matches(
+      query: query,
+      name: record.workerNameSnapshot,
+      initials: PinyinHelper.initialsOf(record.workerNameSnapshot),
+      code: _workerCodes[record.workerId] ?? '',
+    );
+  }
+
+  /// 当前查找条件下的流水（不动原始列表，统计口径也不受影响）。
+  List<PieceRecord> get _filteredRecords {
+    final query = _flowSearch.text.trim();
+    if (query.isEmpty) return _records;
+    return _records
+        .where((record) => _matchesFlowQuery(record, query))
+        .toList(growable: false);
+  }
+
+  Pager get _flowPager => Pager.of(
+        total: _filteredRecords.length,
+        pageSize: _pageSize,
+        page: _pageIndex,
+      );
+
+  void _clearFlowSearch() {
+    _flowSearch.clear();
+    setState(() => _pageIndex = 0);
+  }
+
+  /// 换每页条数：立即生效，并回到第一页。
+  void _changePageSize(int size) {
+    if (size == _pageSize) return;
+    setState(() {
+      _pageSize = size;
+      _pageIndex = 0;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -628,29 +701,137 @@ class _CountPageState extends State<CountPage> {
                 const SizedBox(height: 8),
                 _buildAdjustmentSection(theme, date),
                 const SizedBox(height: 8),
-                SectionCard(
-                  title: '$date 的流水',
-                  trailing: Text(
-                    '${_records.length} 笔',
-                    style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
-                  ),
-                  child: _records.isEmpty
-                      ? const EmptyState(
-                          title: '这天还没有流水',
-                          hint: '上面选好工人和工序，填数量就能记一笔',
-                          icon: Icons.playlist_add,
-                        )
-                      : Column(
-                          children: [
-                            for (var index = 0; index < _records.length; index++) ...[
-                              if (index > 0) const Divider(height: 20),
-                              _buildRecordRow(theme, _records[index]),
-                            ],
-                          ],
-                        ),
-                ),
+                _buildFlowCard(theme, date),
               ],
             ),
+    );
+  }
+
+  /// 当天流水：查找（姓名/工号）+ 分页（10/20/50）。
+  ///
+  /// 为什么要分页而不是全量渲染：一天 200 笔时 ListView 会把 200 行一次性
+  /// build 出来，滚动卡、首屏慢，而且往下翻几十屏才能看到最后一条。
+  /// 现在只 build 当前页的 10/20/50 行，查找也只在内存里过滤，不动数据库。
+  Widget _buildFlowCard(ThemeData theme, String date) {
+    final query = _flowSearch.text.trim();
+    final filtered = _filteredRecords;
+    final pager = _flowPager;
+    final rows = pager.slice(filtered);
+    // 条数还没超过最小档位时不显示分页条，避免"3 笔流水也显示 1/1 页"的噪音
+    final showPager = _records.length > Pager.pageSizes.first || pager.page > 0;
+
+    return SectionCard(
+      title: '$date 的流水',
+      trailing: Text(
+        query.isEmpty
+            ? '${_records.length} 笔'
+            : '匹配 ${filtered.length}/${_records.length} 笔',
+        style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
+      ),
+      child: _records.isEmpty
+          ? const EmptyState(
+              title: '这天还没有流水',
+              hint: '上面选好工人和工序，填数量就能记一笔',
+              icon: Icons.playlist_add,
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SearchField(
+                  key: const ValueKey('flow-search'),
+                  controller: _flowSearch,
+                  hintText: '查找：输入工人姓名或工号',
+                  onChanged: (_) => setState(() => _pageIndex = 0),
+                ),
+                if (query.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  SearchMatchHint(
+                    query: query,
+                    text: '匹配到 ${filtered.length} 笔（共 ${_records.length} 笔）',
+                    onClear: _clearFlowSearch,
+                  ),
+                ],
+                const SizedBox(height: 4),
+                if (filtered.isEmpty)
+                  EmptyState(
+                    title: '没有匹配的流水',
+                    hint: '换个姓名或工号试试，或点「清空」看全部流水',
+                    icon: Icons.search_off,
+                    action: TextButton(
+                      onPressed: _clearFlowSearch,
+                      child: const Text('清空查找'),
+                    ),
+                  )
+                else ...[
+                  for (var index = 0; index < rows.length; index++) ...[
+                    if (index > 0) const Divider(height: 20),
+                    _buildRecordRow(theme, rows[index]),
+                  ],
+                  if (showPager) ...[
+                    const SizedBox(height: 8),
+                    const Divider(height: 16),
+                    _buildPagerBar(theme, pager),
+                  ],
+                ],
+              ],
+            ),
+    );
+  }
+
+  /// 分页条：每页 10 / 20 / 50 + 上一页 / 第 x/y 页 / 下一页。
+  ///
+  /// 用 Wrap 而不是 Row：超大字号下"每页 + 三个档位 + 翻页"挤不进一行，
+  /// 折成两行也比溢出压字好。
+  Widget _buildPagerBar(ThemeData theme, Pager pager) {
+    final muted = theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted);
+    return Wrap(
+      spacing: 10,
+      runSpacing: 4,
+      alignment: WrapAlignment.spaceBetween,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Wrap(
+          spacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text('每页', style: muted),
+            for (final size in Pager.pageSizes)
+              ChoiceChip(
+                key: ValueKey('flow-page-size-$size'),
+                label: Text('$size'),
+                selected: _pageSize == size,
+                onSelected: (_) => _changePageSize(size),
+                visualDensity: VisualDensity.compact,
+                labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              ),
+          ],
+        ),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              key: const ValueKey('flow-page-prev'),
+              tooltip: '上一页',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.chevron_left),
+              onPressed: pager.hasPrev
+                  ? () => setState(() => _pageIndex = pager.page - 1)
+                  : null,
+            ),
+            Text('第 ${pager.pageNumber}/${pager.pageCount} 页', style: muted),
+            IconButton(
+              key: const ValueKey('flow-page-next'),
+              tooltip: '下一页',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.chevron_right),
+              onPressed: pager.hasNext
+                  ? () => setState(() => _pageIndex = pager.page + 1)
+                  : null,
+            ),
+          ],
+        ),
+      ],
     );
   }
 
