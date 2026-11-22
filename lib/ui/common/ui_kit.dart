@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../domain/rules/settlement_rules.dart';
 import '../theme.dart';
 
 /// 白底圆角卡片，统一页面骨架。
@@ -356,3 +357,65 @@ class MutedText extends StatelessWidget {
     );
   }
 }
+
+/// 结算状态标签：已结算 / 部分已结 / 未结算。
+///
+/// 颜色语义固定：绿=已结清，橙=还有钱没发，蓝=跨月只结了一部分。
+/// 明细页里用 [compact] 缩小一号，避免一屏几十条时标签比内容还抢眼。
+class SettlementBadge extends StatelessWidget {
+  const SettlementBadge(this.status, {super.key, this.compact = false});
+
+  final SettlementStatus status;
+  final bool compact;
+
+  Color get _color => switch (status) {
+        SettlementStatus.settled => AppTheme.success,
+        SettlementStatus.partial => AppTheme.primary,
+        SettlementStatus.unsettled => AppTheme.warning,
+      };
+
+  IconData get _icon => switch (status) {
+        SettlementStatus.settled => Icons.check_circle_outline,
+        SettlementStatus.partial => Icons.timelapse,
+        SettlementStatus.unsettled => Icons.schedule,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _color;
+    // FittedBox 兜底：标签常被塞进很窄的姓名行，空间不够时整体缩放，
+    // 绝不让 Row 溢出（大字模式下这几乎必然发生）。
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 5 : 7,
+          vertical: compact ? 1 : 3,
+        ),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withValues(alpha: 0.28)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(_icon, size: compact ? 12 : 14, color: color),
+            const SizedBox(width: 3),
+            Text(
+              status.label,
+              maxLines: 1,
+              style: TextStyle(
+                fontSize: compact ? 11 : 12,
+                color: color,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+

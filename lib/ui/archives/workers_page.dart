@@ -1,6 +1,8 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/constants.dart';
 import '../../core/failures.dart';
+import '../../core/validators.dart';
 import '../../data/models/worker.dart';
 import '../../domain/pinyin/pinyin_helper.dart';
 import '../../services/app_services.dart';
@@ -242,7 +244,12 @@ class _WorkersPageState extends State<WorkersPage> {
           ],
         ),
         subtitle: Text(
-          '首字母 ${worker.pinyinInitials.isEmpty ? '—' : worker.pinyinInitials} · 点一下看档案',
+          [
+            '首字母 ${worker.pinyinInitials.isEmpty ? '—' : worker.pinyinInitials}',
+            if (worker.phone.isNotEmpty) '电话 ${worker.phone}',
+          ].join(' · '),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
         ),
         trailing: Row(
@@ -280,6 +287,8 @@ class _WorkerEditor extends StatefulWidget {
 class _WorkerEditorState extends State<_WorkerEditor> {
   late final TextEditingController _name;
   late final TextEditingController _code;
+  late final TextEditingController _phone;
+  late final TextEditingController _idCard;
   late final TextEditingController _initials;
 
   bool _initialsTouched = false;
@@ -295,6 +304,10 @@ class _WorkerEditorState extends State<_WorkerEditor> {
     _name = TextEditingController(text: worker?.name ?? '')
       ..addListener(_syncInitials);
     _code = TextEditingController(text: worker?.code ?? '');
+    _phone = TextEditingController(text: worker?.phone ?? '')
+      ..addListener(_onContactChanged);
+    _idCard = TextEditingController(text: worker?.idCard ?? '')
+      ..addListener(_onContactChanged);
     _initials = TextEditingController(text: worker?.pinyinInitials ?? '')
       ..addListener(() {
         if (!_initialsTouched) return;
@@ -314,8 +327,15 @@ class _WorkerEditorState extends State<_WorkerEditor> {
   void dispose() {
     _name.dispose();
     _code.dispose();
+    _phone.dispose();
+    _idCard.dispose();
     _initials.dispose();
     super.dispose();
+  }
+
+  /// 只刷新提示文案，不做任何拦截。
+  void _onContactChanged() {
+    if (mounted) setState(() {});
   }
 
   void _syncInitials() {
@@ -343,6 +363,8 @@ class _WorkerEditorState extends State<_WorkerEditor> {
         await widget.services.workers.create(
           name: _name.text,
           code: _code.text,
+          phone: _phone.text,
+          idCard: _idCard.text,
           pinyinInitials: _initials.text,
         );
       } else {
@@ -350,6 +372,8 @@ class _WorkerEditorState extends State<_WorkerEditor> {
         await widget.services.workers.update(
           worker.copyWith(
             name: _name.text,
+            phone: _phone.text,
+            idCard: _idCard.text,
             pinyinInitials: _initials.text,
           ),
         );
@@ -361,6 +385,27 @@ class _WorkerEditorState extends State<_WorkerEditor> {
       setState(() => _saving = false);
       showToast(context, error.message, isError: true);
     }
+  }
+
+  /// 柔性提示：只在格式可疑时出现，**不拦保存**。
+  Widget _buildNotice(String? message) {
+    if (message == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline, size: 15, color: AppTheme.warning),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(fontSize: 13, color: AppTheme.warning),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -406,6 +451,37 @@ class _WorkerEditorState extends State<_WorkerEditor> {
                 helperText: _isEdit ? '编号创建后固定不变，避免历史单据对不上人' : '可改成厂里已有的工号',
               ),
             ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _phone,
+              keyboardType: TextInputType.phone,
+              style: const TextStyle(fontSize: 18),
+              maxLength: Limits.maxPhoneLength,
+              decoration: const InputDecoration(
+                labelText: '电话号码（选填）',
+                hintText: '如 138 0000 0000',
+                helperText: '方便联系；座机带区号也能填',
+                counterText: '',
+              ),
+            ),
+            _buildNotice(Validators.phoneWarning(_phone.text)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _idCard,
+              keyboardType: TextInputType.text,
+              textCapitalization: TextCapitalization.characters,
+              autocorrect: false,
+              enableSuggestions: false,
+              style: const TextStyle(fontSize: 18),
+              maxLength: Limits.maxIdCardLength,
+              decoration: const InputDecoration(
+                labelText: '身份证号（选填）',
+                hintText: '18 位，最后一位可能是 X',
+                helperText: '只存在本机，用于建档与核对，不参与工资计算',
+                counterText: '',
+              ),
+            ),
+            _buildNotice(Validators.idCardWarning(_idCard.text)),
             const SizedBox(height: 12),
             TextField(
               controller: _initials,

@@ -1,5 +1,6 @@
 import '../../core/constants.dart';
 import '../../core/dates.dart';
+import '../../domain/rules/settlement_rules.dart';
 
 /// 结算分组：严格按 (toy_id, process, 正常单价, 是否加班, 加班单价) 聚合。
 ///
@@ -67,6 +68,8 @@ class WorkerSettlement {
     required this.groups,
     required this.adjustmentTotals,
     required this.pieceCents,
+    this.monthNetCents = const {},
+    this.settledMonths = const {},
   });
 
   final String workerId;
@@ -82,6 +85,15 @@ class WorkerSettlement {
 
   /// 计件工资合计（分）。
   final int pieceCents;
+
+  /// 按月拆分的应付净额（分）：`YYYY-MM` → 金额。
+  ///
+  /// 结算状态是「按月」记的，所以要把金额也按月拆开，
+  /// 才能算清「已结算多少、未结算多少」，而不是靠估算。
+  final Map<String, int> monthNetCents;
+
+  /// 区间内有账、且已标记结算的月份。
+  final Set<String> settledMonths;
 
   int get bonusCents => adjustmentTotals[AdjustmentType.bonus] ?? 0;
   int get hourlyCents => adjustmentTotals[AdjustmentType.hourly] ?? 0;
@@ -103,6 +115,29 @@ class WorkerSettlement {
       adjustmentTotals.values.where((amount) => amount > 0).length;
 
   bool get hasAdjustments => bonusCents + hourlyCents + deductionCents + advanceCents > 0;
+
+  /// 有账的月份（按升序），用于判定与批量标记。
+  List<String> get activeMonths {
+    final months = monthNetCents.keys.toList(growable: false)..sort();
+    return months;
+  }
+
+  /// 本区间的结算状态：全部已结 / 部分已结 / 未结算。
+  SettlementStatus get settlementStatus => SettlementRules.statusOf(
+        months: activeMonths,
+        settledMonths: settledMonths,
+      );
+
+  /// 已结算金额（分）。
+  int get settledCents =>
+      SettlementRules.settledCents(monthNetCents, settledMonths);
+
+  /// 未结算金额（分），保证「已结算 + 未结算 == 应付」。
+  int get unsettledCents =>
+      SettlementRules.unsettledCents(monthNetCents, settledMonths, netCents);
+
+  /// 是否整个区间都已结清。
+  bool get isFullySettled => settlementStatus.isFullySettled;
 }
 
 /// 一个区间的完整结算结果。
@@ -130,6 +165,32 @@ class SettlementResult {
   int get hourlyTotal => workers.fold(0, (sum, w) => sum + w.hourlyCents);
   int get deductionTotal => workers.fold(0, (sum, w) => sum + w.deductionCents);
   int get advanceTotal => workers.fold(0, (sum, w) => sum + w.advanceCents);
+
+  /// 已结算金额（只统计全部结清的工人）。
+  ///
+  /// 部分已结的工人整笔计入未结算，提醒「这个人还有月份没结」，
+  /// 避免看着「已结算 800 元」就以为已经结干净了。
+  int get settledTotalCents => workers
+      .where((w) => w.isFullySettled)
+      .fold(0, (sum, w) => sum + w.netCents);
+
+  /// 未结算金额（含部分已结的整个人）。
+  int get unsettledTotalCents => workers
+      .where((w) => !w.isFullySettled)
+      .fold(0, (sum, w) => sum + w.netCents);
+
+  int get settledWorkerCount => workers.where((w) => w.isFullySettled).length;
+
+  int get unsettledWorkerCount =>
+      workers.where((w) => !w.isFullySettled).length;
+
+  /// 按状态筛人；`null` = 全部。
+  List<WorkerSettlement> filterBy(SettlementStatus? status) {
+    if (status == null) return workers;
+    return workers
+        .where((w) => w.settlementStatus == status)
+        .toList(growable: false);
+  }
 
   int get workerCount => workers.length;
 

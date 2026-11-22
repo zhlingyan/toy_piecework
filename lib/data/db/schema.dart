@@ -1,6 +1,6 @@
 import '../../core/constants.dart';
 
-/// 数据库结构定义（版本 3）。
+/// 数据库结构定义（版本 4）。
 ///
 /// 索引原则：日期、工人、删除标记三条高频过滤路径全部建索引。
 /// 不启用外键约束——历史流水必须能在档案归档后继续存在，
@@ -8,7 +8,7 @@ import '../../core/constants.dart';
 class Schema {
   Schema._();
 
-  static const int version = 3;
+  static const int version = 4;
 
   static const List<String> createStatements = [
     '''
@@ -16,6 +16,8 @@ class Schema {
       id TEXT PRIMARY KEY NOT NULL,
       code TEXT NOT NULL DEFAULT '',
       name TEXT NOT NULL,
+      phone TEXT NOT NULL DEFAULT '',
+      id_card TEXT NOT NULL DEFAULT '',
       pinyin_initials TEXT NOT NULL DEFAULT '',
       is_archived INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
@@ -95,6 +97,18 @@ class Schema {
       unlocked_at INTEGER
     )
     ''',
+    // 结算状态：按「工人 + 月份」记。锁账管「能不能改」，这张表管「钱发没发」，
+    // 两者刻意解耦：可以先结算不锁账，也可以先锁账再回头标记已结算。
+    '''
+    CREATE TABLE ${Tables.settlementMarks} (
+      worker_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      is_settled INTEGER NOT NULL DEFAULT 0,
+      settled_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (worker_id, month)
+    )
+    ''',
     // ---- 索引 ----
     'CREATE INDEX idx_workers_archived ON ${Tables.workers}(is_archived)',
     'CREATE INDEX idx_workers_code ON ${Tables.workers}(code)',
@@ -108,6 +122,7 @@ class Schema {
     'CREATE INDEX idx_adjustments_date ON ${Tables.adjustments}(date)',
     'CREATE INDEX idx_adjustments_worker_date ON ${Tables.adjustments}(worker_id, date)',
     'CREATE INDEX idx_adjustments_deleted ON ${Tables.adjustments}(deleted_at)',
+    'CREATE INDEX idx_settlement_month ON ${Tables.settlementMarks}(month)',
   ];
 
   /// 恢复/导入前清空用，顺序无关（无外键）。
@@ -118,6 +133,7 @@ class Schema {
     'DELETE FROM ${Tables.workers}',
     'DELETE FROM ${Tables.lockedMonths}',
     'DELETE FROM ${Tables.processPresets}',
+    'DELETE FROM ${Tables.settlementMarks}',
   ];
 
   /// 预置常用工序。
@@ -187,5 +203,29 @@ class Schema {
         'SELECT DISTINCT TRIM(process), 0, 1000, '
         'CAST(strftime(\'%s\', \'now\') AS INTEGER) * 1000 '
         'FROM ${Tables.toys} WHERE TRIM(process) <> \'\'',
+  ];
+
+  /// v3 → v4：工人联系方式 + 结算状态表。
+  ///
+  /// * 电话/身份证号是**选填**，老档案统一补空串，
+  ///   查询、结算、报表都不依赖这两个字段，升级后行为与之前一致；
+  /// * `settlement_marks` 新表默认为空 = 所有历史账目都是「未结算」，
+  ///   不会凭空把已经发过钱的月份标成未结算，也不会擅自标成已结算。
+  static const List<String> migrateV3ToV4 = [
+    'ALTER TABLE ${Tables.workers} '
+        "ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
+    'ALTER TABLE ${Tables.workers} '
+        "ADD COLUMN id_card TEXT NOT NULL DEFAULT ''",
+    '''
+    CREATE TABLE ${Tables.settlementMarks} (
+      worker_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      is_settled INTEGER NOT NULL DEFAULT 0,
+      settled_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (worker_id, month)
+    )
+    ''',
+    'CREATE INDEX idx_settlement_month ON ${Tables.settlementMarks}(month)',
   ];
 }

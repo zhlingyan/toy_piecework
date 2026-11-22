@@ -68,6 +68,7 @@ class CsvExportService {
       '加班件数',
       '其中加班工资(元)',
       '说明',
+      '结算状态',
     ]));
     for (final worker in result.workers) {
       // 加班单独列出来，方便核对「这个月加了多少班、多拿了多少」
@@ -89,6 +90,7 @@ class CsvExportService {
         '$overtimeQuantity',
         Money.formatCents(overtimeCents),
         worker.isArchived ? '已停用档案' : '',
+        worker.settlementStatus.label,
       ]));
     }
     buffer.write(_row([
@@ -103,6 +105,7 @@ class CsvExportService {
       '',
       '',
       '${result.range.label}，逐笔取整后合计',
+      '未结 ${Money.formatCents(result.unsettledTotalCents)}',
     ]));
     return buffer.toString();
   }

@@ -69,9 +69,12 @@ void main() {
       final lines = text.split('\r\n').where((line) => line.isNotEmpty).toList();
 
       expect(lines.length, 3, reason: '表头 + 1 行明细 + 合计');
+      expect(lines.first, contains('结算状态'));
       expect(lines[1], contains('100.00,20.00,0.00,0.00,0.00,120.00'));
+      expect(lines[1], endsWith('未结算'));
       expect(lines[2], startsWith(',合计,100.00,20.00'));
       expect(lines[2], contains('逐笔取整后合计'));
+      expect(lines[2], contains('未结 120.00'));
     });
 
     test('字段转义：换行与纯文本原样保留', () {

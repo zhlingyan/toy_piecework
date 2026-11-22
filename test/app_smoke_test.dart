@@ -55,6 +55,15 @@ void main() {
     await tester.pump(const Duration(milliseconds: 32));
   }
 
+  /// 拉高视口：结算页首屏上方有区间、汇总、锁账三块，
+  /// 默认 800×600 的测试视口里工人行会被 ListView 懒加载挡在外面。
+  void useTallView(WidgetTester tester) {
+    tester.view.physicalSize = const Size(1080, 2400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+
   /// 单独渲染一个子页面（带 AppScope 与主题）。
   Future<void> pumpPage(WidgetTester tester, Widget page) async {
     await tester.pumpWidget(
@@ -71,6 +80,7 @@ void main() {
   }
 
   testWidgets('四个页签都能正常渲染', (tester) async {
+    useTallView(tester);
     final selection = SelectionState();
     await tester.pumpWidget(
       ToyPieceworkApp(services: services, selection: selection),

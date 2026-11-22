@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/settlement.dart';
+import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
 import '../../state/selection_state.dart';
 import '../common/export_sheet.dart';
@@ -31,6 +32,9 @@ class _SettlementPageState extends State<SettlementPage> {
   int _loadedVersion = -1;
   int _rangePreset = 2; // 0 今日 1 近7天 2 本月 3 上月 4 自定义
 
+  /// 结算状态筛选：null = 全部。
+  SettlementStatus? _statusFilter;
+
   @override
   void initState() {
     super.initState();
@@ -58,6 +62,13 @@ class _SettlementPageState extends State<SettlementPage> {
       _lockedMonths = locked;
       _loading = false;
     });
+  }
+
+  /// 当前筛选下要展示的工人。
+  List<WorkerSettlement> get _visibleWorkers {
+    final result = _result;
+    if (result == null) return const [];
+    return result.filterBy(_statusFilter);
   }
 
   void _applyPreset(int preset) {
@@ -259,7 +270,7 @@ class _SettlementPageState extends State<SettlementPage> {
                   SectionCard(
                     title: '按工人结算',
                     trailing: Text(
-                      '${result?.workers.length ?? 0} 人',
+                      '${_visibleWorkers.length}/${result?.workers.length ?? 0} 人',
                       style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
                     ),
                     child: (result == null || result.workers.isEmpty)
@@ -269,13 +280,28 @@ class _SettlementPageState extends State<SettlementPage> {
                             icon: Icons.receipt_long_outlined,
                           )
                         : Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              for (var index = 0;
-                                  index < result.workers.length;
-                                  index++) ...[
-                                if (index > 0) const Divider(height: 18),
-                                _buildWorkerRow(theme, result.workers[index]),
-                              ],
+                              _buildStatusFilter(theme, result),
+                              const SizedBox(height: 6),
+                              if (_visibleWorkers.isEmpty)
+                                EmptyState(
+                                  title: _statusFilter == SettlementStatus.unsettled
+                                      ? '这个区间没有未结算的账'
+                                      : '这个区间没有已结算的账',
+                                  hint: '换一个筛选看看，或在工人明细里标记结算状态',
+                                  icon: Icons.filter_alt_off_outlined,
+                                )
+                              else
+                                for (var index = 0;
+                                    index < _visibleWorkers.length;
+                                    index++) ...[
+                                  if (index > 0) const Divider(height: 18),
+                                  _buildWorkerRow(
+                                    theme,
+                                    _visibleWorkers[index],
+                                  ),
+                                ],
                             ],
                           ),
                   ),
@@ -384,10 +410,138 @@ class _SettlementPageState extends State<SettlementPage> {
               _miniStat('笔数', '${result?.recordCount ?? 0}'),
             ],
           ),
+          const SizedBox(height: 12),
+          const Divider(height: 1, color: Color(0xFFEDEFF3)),
+          const SizedBox(height: 10),
+          // 已结 / 未结分开显示：一眼看出「还有多少人的钱没发」
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _settlementStat(
+                  label: '未结算',
+                  cents: result?.unsettledTotalCents ?? 0,
+                  color: AppTheme.warning,
+                  people: result?.unsettledWorkerCount ?? 0,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _settlementStat(
+                  label: '已结算',
+                  cents: result?.settledTotalCents ?? 0,
+                  color: AppTheme.success,
+                  people: result?.settledWorkerCount ?? 0,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 10),
           MutedText(
-            '补贴 / 计时 / 扣款 / 预支的每一笔，点工人行进去可以查看、补录、修改。',
+            '结算状态按「人 + 月」记录。点工人行进去可以标记已结算、查看详细明细，'
+            '补贴 / 计时 / 扣款 / 预支的每一笔也能在那里查看和补录。',
           ),
+        ],
+      ),
+    );
+  }
+
+  /// 结算进度小卡：金额 + 人数。
+  Widget _settlementStat({
+    required String label,
+    required int cents,
+    required Color color,
+    required int people,
+  }) {
+    return Builder(
+      builder: (context) {
+        final theme = Theme.of(context);
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: color.withValues(alpha: 0.2)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    label == '已结算'
+                        ? Icons.check_circle_outline
+                        : Icons.schedule,
+                    size: 16,
+                    color: color,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    label,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: color,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      '$people 人',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: AppTheme.muted),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '${Money.formatCents(cents)} 元',
+                  maxLines: 1,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 全部 / 未结算 / 已结算 三个筛选片。
+  Widget _buildStatusFilter(ThemeData theme, SettlementResult result) {
+    final items = <({SettlementStatus? status, String label, int count})>[
+      (status: null, label: '全部', count: result.workers.length),
+      (
+        status: SettlementStatus.unsettled,
+        label: '未结算',
+        count: result.unsettledWorkerCount,
+      ),
+      (
+        status: SettlementStatus.settled,
+        label: '已结算',
+        count: result.settledWorkerCount,
+      ),
+    ];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final item in items) ...[
+            ChoiceChip(
+              label: Text('${item.label} ${item.count}'),
+              selected: _statusFilter == item.status,
+              onSelected: (_) => setState(() => _statusFilter = item.status),
+            ),
+            const SizedBox(width: 8),
+          ],
         ],
       ),
     );
@@ -458,7 +612,7 @@ class _SettlementPageState extends State<SettlementPage> {
                   Row(
                     children: [
                       // 姓名可能很长（如「张三（临时工）」），
-                      // 大字模式下必须允许收缩，否则会把「已停用」标签挤出屏幕
+                      // 大字模式下必须允许收缩，否则会把标签挤出屏幕
                       Flexible(
                         child: Text(
                           worker.workerName,
@@ -468,6 +622,8 @@ class _SettlementPageState extends State<SettlementPage> {
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                       ),
+                      const SizedBox(width: 6),
+                      SettlementBadge(worker.settlementStatus, compact: true),
                       if (worker.isArchived) ...[
                         const SizedBox(width: 6),
                         Container(
@@ -482,11 +638,27 @@ class _SettlementPageState extends State<SettlementPage> {
                     ],
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    worker.onlyAdjustments
-                        ? '仅调整项'
-                        : '${worker.groups.length} 项工序 · ${worker.totalQuantity} 件',
-                    style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 2,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        worker.onlyAdjustments
+                            ? '仅调整项'
+                            : '${worker.groups.length} 项工序 · ${worker.totalQuantity} 件',
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(color: AppTheme.muted),
+                      ),
+                      if (!worker.isFullySettled && worker.netCents != 0)
+                        Text(
+                          '未结 ${Money.formatCents(worker.unsettledCents)} 元',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: AppTheme.warning,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                    ],
                   ),
                 ],
               ),

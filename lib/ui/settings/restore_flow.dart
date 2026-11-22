@@ -25,7 +25,8 @@ Future<bool> restoreFromBackupText(
         '流水范围：${preview.summary.dateRangeLabel}\n'
         '工人 ${preview.summary.workerCount} 人 · 玩具 ${preview.summary.toyCount} 项 · '
         '流水 ${preview.summary.recordCount} 笔 · 调整 ${preview.summary.adjustmentCount} 条\n'
-        '锁账月份 ${preview.summary.lockedMonthCount} 个\n\n'
+        '锁账月份 ${preview.summary.lockedMonthCount} 个'
+        '${preview.summary.settlementCount > 0 ? ' · 结算标记 ${preview.summary.settlementCount} 条' : ''}\n\n'
         '恢复会先自动备份当前账本，再整体覆盖。现有数据将被替换。',
     confirmText: '确认恢复',
     danger: true,

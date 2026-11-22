@@ -122,6 +122,8 @@ class WorkerRepository {
   Future<Worker> create({
     required String name,
     String? code,
+    String phone = '',
+    String idCard = '',
     String pinyinInitials = '',
     DatabaseExecutor? ex,
   }) {
@@ -142,6 +144,8 @@ class WorkerRepository {
         id: IdGen.next(),
         code: finalCode,
         name: trimmedName,
+        phone: phone.trim(),
+        idCard: idCard.trim(),
         pinyinInitials: pinyinInitials.trim().toUpperCase(),
         isArchived: false,
         createdAt: now,
@@ -172,6 +176,8 @@ class WorkerRepository {
       final updated = worker.copyWith(
         name: trimmedName,
         code: newCode.isEmpty ? existing.code : newCode,
+        phone: worker.phone.trim(),
+        idCard: worker.idCard.trim(),
         pinyinInitials: worker.pinyinInitials.trim().toUpperCase(),
         updatedAt: AppClock.nowMillis(),
       );

@@ -10,6 +10,7 @@ class Tables {
   static const String adjustments = 'adjustments';
   static const String lockedMonths = 'locked_months';
   static const String processPresets = 'process_presets';
+  static const String settlementMarks = 'settlement_marks';
 }
 
 /// 调整项类型：统一录正数，按 [sign] 决定加减。
@@ -131,6 +132,12 @@ class Limits {
 
   /// 工序名称最大长度（字符数）。
   static const int maxProcessNameLength = 12;
+
+  /// 电话号码最大长度（字符数）。留点余量给「+86 138 0000 0000」这类写法。
+  static const int maxPhoneLength = 24;
+
+  /// 身份证号最大长度（字符数）。
+  static const int maxIdCardLength = 32;
 }
 
 class Defaults {
@@ -187,8 +194,9 @@ class Defaults {
   /// 备份文件格式标识与版本。
   ///
   /// v3：调整项新增工时/时薪，且多了 `process_presets` 表。
-  /// 新版本能读 v1/v2（缺字段按默认值补齐），老版本读 v3 会直接拒绝，
+  /// v4：工人档案新增电话/身份证号，且多了 `settlement_marks` 表。
+  /// 新版本能读 v1/v2/v3（缺字段按默认值补齐），老版本读 v4 会直接拒绝，
   /// 避免「静默丢字段」这种最难查的问题。
   static const String backupFormat = 'toy_piecework_backup';
-  static const int backupVersion = 3;
+  static const int backupVersion = 4;
 }

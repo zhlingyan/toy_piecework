@@ -7,11 +7,13 @@ import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/settlement.dart';
 import '../../data/models/worker.dart';
+import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
 import '../common/export_sheet.dart';
 import '../common/ui_kit.dart';
 import '../count/adjustment_sheet.dart';
 import '../theme.dart';
+import 'worker_records_page.dart';
 
 /// 单人结算明细：计件分组（按单价拆行）+ 调整项增删改。
 Future<void> showWorkerDetailSheet({
@@ -52,9 +54,11 @@ class _WorkerDetailSheet extends StatefulWidget {
 
 class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
   List<Adjustment> _adjustments = const [];
+  Set<String> _settledMonths = const {};
   bool _loading = true;
   bool _locked = false;
   bool _buildingPayslip = false;
+  bool _marking = false;
 
   @override
   void initState() {
@@ -68,12 +72,94 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
       workerId: widget.worker.workerId,
     );
     final lockedMonths = await widget.services.months.lockedMonths();
+    final settledMonths = await widget.services.settlementMarks
+        .settledMonthsFor(widget.worker.workerId);
     if (!mounted) return;
     setState(() {
       _adjustments = adjustments;
+      _settledMonths = settledMonths;
       _locked = widget.range.months.any(lockedMonths.contains);
       _loading = false;
     });
+  }
+
+  /// 本区间内「有账」的月份：结算标记只针对这些月份。
+  ///
+  /// 把界面上新录入的调整项月份也并进来：弹层打开后补记一笔 7 月的补贴，
+  /// 标记时就得把 7 月一起标上，否则关掉再打开会突然变成「部分已结」。
+  List<String> get _activeMonths {
+    final months = <String>{
+      ...widget.worker.monthNetCents.keys,
+      for (final adjustment in _adjustments) Dates.ymOfYmd(adjustment.date),
+    }.toList();
+    months.sort();
+    return months;
+  }
+
+  SettlementStatus get _status => SettlementRules.statusOf(
+        months: _activeMonths,
+        settledMonths: _settledMonths,
+      );
+
+  /// 标记 / 取消标记本区间已结算。
+  ///
+  /// 只改状态，不动任何金额；因此即使月份已锁账也允许操作
+  /// （锁账是防改账，结算是记录「钱已发」）。
+  Future<void> _toggleSettled() async {
+    if (_marking) return;
+    final months = _activeMonths;
+    if (months.isEmpty) {
+      showToast(context, '本期没有可结算的账目', isError: true);
+      return;
+    }
+    final settle = !_status.isFullySettled;
+    final prettyMonths = months
+        .map((month) => '${month.substring(0, 4)}年${int.parse(month.substring(5, 7))}月')
+        .join('、');
+    final ok = await showConfirmDialog(
+      context,
+      title: settle ? '标记 $prettyMonths 已结算？' : '取消已结算标记？',
+      message: settle
+          ? '只做状态标记，不改金额、不影响计件与调整项。\n'
+              '本期应付 ${Money.formatCents(widget.worker.netCents)} 元，'
+              '其中未结 ${Money.formatCents(widget.worker.unsettledCents)} 元。\n'
+              '标记后会归入「已结算」，方便和还没发钱的工人区分开。'
+          : '取消后 $prettyMonths 会重新算作「未结算」。金额不变，随时可以再标记回来。',
+      confirmText: settle ? '标记已结算' : '取消标记',
+      danger: !settle,
+    );
+    if (!ok) return;
+    setState(() => _marking = true);
+    try {
+      await widget.services.settlementMarks.markSettled(
+        workerId: widget.worker.workerId,
+        months: months,
+        settled: settle,
+      );
+      widget.services.notifyDataChanged();
+      await _load();
+      if (!mounted) return;
+      showToast(context, settle ? '已标记为已结算' : '已取消结算标记');
+    } catch (error) {
+      if (!mounted) return;
+      showToast(context, '操作失败：$error', isError: true);
+    } finally {
+      if (mounted) setState(() => _marking = false);
+    }
+  }
+
+  Future<void> _openRecords() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => WorkerRecordsPage(
+          workerId: widget.worker.workerId,
+          workerName: widget.worker.workerName,
+          workerCode: widget.worker.workerCode,
+          range: widget.range,
+        ),
+      ),
+    );
+    if (mounted) await _load();
   }
 
   Future<void> _addAdjustment() async {
@@ -184,26 +270,47 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(worker.workerName, style: theme.textTheme.titleLarge),
-                      Text(
-                        '${widget.range.label} · 编号 ${worker.workerCode}',
-                        style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
+                      const SizedBox(height: 2),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Text(
+                            '${widget.range.label} · 编号 ${worker.workerCode}',
+                            style: theme.textTheme.bodyMedium
+                                ?.copyWith(color: AppTheme.muted),
+                          ),
+                          SettlementBadge(_status, compact: true),
+                        ],
                       ),
                     ],
                   ),
                 ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text('应付',
-                        style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted)),
-                    Text(
-                      Money.formatCents(net),
-                      style: theme.textTheme.headlineSmall?.copyWith(
-                        color: net < 0 ? AppTheme.danger : AppTheme.primary,
-                        fontWeight: FontWeight.w800,
+                // 金额单独限宽：金额位数多 + 超大字号时宁可整体缩小，
+                // 也不能把左边的姓名/区间压成一条缝（结算状态标签就放不下了）。
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 148),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text('应付',
+                          style: theme.textTheme.bodyMedium
+                              ?.copyWith(color: AppTheme.muted)),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          Money.formatCents(net),
+                          maxLines: 1,
+                          style: theme.textTheme.headlineSmall?.copyWith(
+                            color: net < 0 ? AppTheme.danger : AppTheme.primary,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.close),
@@ -228,6 +335,41 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                 : ListView(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
                     children: [
+                      // 两个主动作：看逐条明细、标记结算状态
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: _openRecords,
+                            icon: const Icon(Icons.format_list_bulleted, size: 20),
+                            label: const Text('详细明细'),
+                          ),
+                          if (_activeMonths.isNotEmpty)
+                            _status.isFullySettled
+                                ? TextButton.icon(
+                                    onPressed: _marking ? null : _toggleSettled,
+                                    icon: const Icon(Icons.undo, size: 20),
+                                    label: const Text('取消已结算'),
+                                  )
+                                : OutlinedButton.icon(
+                                    onPressed: _marking ? null : _toggleSettled,
+                                    icon: const Icon(Icons.check_circle_outline,
+                                        size: 20),
+                                    label: Text(
+                                      _status == SettlementStatus.partial
+                                          ? '标记全部已结算'
+                                          : '标记本期已结算',
+                                    ),
+                                  ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      MutedText(
+                        '「详细明细」按当前区间逐条列出每一笔：哪天、什么工序、多少件、'
+                        '多少钱、是否已结算。',
+                      ),
+                      const SizedBox(height: 14),
                       Text('计件明细', style: theme.textTheme.titleMedium),
                       const SizedBox(height: 4),
                       MutedText('同一工序不同单价会分行显示，合计为逐笔取整后相加。'),
@@ -425,6 +567,11 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
   }
 
   Widget _buildFormulaCard(ThemeData theme, WorkerSettlement worker) {
+    final settled = SettlementRules.settledCents(
+      worker.monthNetCents,
+      _settledMonths,
+    );
+    final unsettled = worker.netCents - settled;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -447,6 +594,16 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
             value: '${Money.formatCents(worker.netCents)} 元',
             bold: true,
             valueColor: worker.isNegative ? AppTheme.danger : AppTheme.primary,
+          ),
+          KeyValueRow(
+            label: '已结算',
+            value: Money.formatCents(settled),
+            valueColor: AppTheme.success,
+          ),
+          KeyValueRow(
+            label: '未结算',
+            value: Money.formatCents(unsettled),
+            valueColor: unsettled == 0 ? AppTheme.muted : AppTheme.warning,
           ),
           if (worker.isNegative)
             const Padding(

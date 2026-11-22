@@ -67,6 +67,52 @@ class SettlementRepository {
     );
     final recordCount = (recordCountRows.first['c'] as int?) ?? 0;
 
+    // 按月拆分的金额：结算状态按「人 + 月」记，金额也必须能按月对上，
+    // 否则「已结算 / 未结算」只能靠估算，对账时必然扯皮。
+    final pieceMonthRows = await executor.rawQuery(
+      '''
+      SELECT worker_id, substr(date, 1, 7) AS month,
+             SUM(subtotal_cents) AS total_cents
+        FROM ${Tables.pieceRecords}
+       WHERE date >= ? AND date <= ? AND deleted_at IS NULL$whereWorker
+       GROUP BY worker_id, month
+      ''',
+      pieceArgs,
+    );
+    final adjustMonthRows = await executor.rawQuery(
+      '''
+      SELECT worker_id, substr(date, 1, 7) AS month, type,
+             SUM(amount_cents) AS total_cents
+        FROM ${Tables.adjustments}
+       WHERE date >= ? AND date <= ? AND deleted_at IS NULL$whereWorker
+       GROUP BY worker_id, month, type
+      ''',
+      adjustArgs,
+    );
+
+    final monthNetByWorker = <String, Map<String, int>>{};
+    void addMonthNet(String workerId, String month, int cents) {
+      final map = monthNetByWorker.putIfAbsent(workerId, () => <String, int>{});
+      map[month] = (map[month] ?? 0) + cents;
+    }
+
+    for (final row in pieceMonthRows) {
+      addMonthNet(
+        row['worker_id']! as String,
+        row['month']! as String,
+        (row['total_cents'] as int?) ?? 0,
+      );
+    }
+    for (final row in adjustMonthRows) {
+      final type = AdjustmentType.tryFromCode(row['type']! as String);
+      if (type == null) continue;
+      addMonthNet(
+        row['worker_id']! as String,
+        row['month']! as String,
+        type.sign * ((row['total_cents'] as int?) ?? 0),
+      );
+    }
+
     // 收集涉及到的工人 id
     final workerIds = <String>{
       ...pieceRows.map((row) => row['worker_id']! as String),
@@ -75,6 +121,12 @@ class SettlementRepository {
     if (workerIds.isEmpty) {
       return SettlementResult(range: range, workers: const [], recordCount: 0);
     }
+
+    final settledByWorker = await _settledMonths(
+      executor,
+      workerIds,
+      range.months,
+    );
 
     final workerMap = <String, ({String name, String code, bool archived})>{};
     final placeholders = List.filled(workerIds.length, '?').join(',');
@@ -144,6 +196,12 @@ class SettlementRepository {
           groups: groups,
           adjustmentTotals: Map<AdjustmentType, int>.unmodifiable(adjustments),
           pieceCents: pieceCents,
+          monthNetCents: Map<String, int>.unmodifiable(
+            monthNetByWorker[id] ?? const <String, int>{},
+          ),
+          settledMonths: Set<String>.unmodifiable(
+            settledByWorker[id] ?? const <String>{},
+          ),
         ),
       );
     }
@@ -170,6 +228,30 @@ class SettlementRepository {
       if (row['worker_id'] == workerId) return '（已删除工人）';
     }
     return '（未知工人）';
+  }
+
+  /// 取这批工人在区间内「已标记结算」的月份。
+  Future<Map<String, Set<String>>> _settledMonths(
+    DatabaseExecutor executor,
+    Set<String> workerIds,
+    List<String> months,
+  ) async {
+    if (workerIds.isEmpty || months.isEmpty) return const {};
+    final workerList = workerIds.toList(growable: false);
+    final rows = await executor.rawQuery(
+      'SELECT worker_id, month FROM ${Tables.settlementMarks} '
+      'WHERE is_settled = 1 '
+      'AND worker_id IN (${List.filled(workerList.length, '?').join(',')}) '
+      'AND month IN (${List.filled(months.length, '?').join(',')})',
+      [...workerList, ...months],
+    );
+    final result = <String, Set<String>>{};
+    for (final row in rows) {
+      result
+          .putIfAbsent(row['worker_id']! as String, () => <String>{})
+          .add(row['month']! as String);
+    }
+    return result;
   }
 
   /// 概览页：当日笔数 / 出勤人数 / 计件总额。

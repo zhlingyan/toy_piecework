@@ -25,6 +25,9 @@ class _WorkerProfilePageState extends State<WorkerProfilePage> {
   bool _loading = true;
   bool _showAllDays = false;
 
+  /// 身份证号默认遮罩，点眼睛才看全（借手机给人看账时不至于一眼全露）。
+  bool _showIdCard = false;
+
   static const int _dayLimit = 120;
 
   @override
@@ -188,6 +191,48 @@ class _WorkerProfilePageState extends State<WorkerProfilePage> {
           KeyValueRow(
             label: '拼音首字母',
             value: worker.pinyinInitials.isEmpty ? '—' : worker.pinyinInitials,
+          ),
+          KeyValueRow(
+            label: '电话号码',
+            value: worker.phone.isEmpty ? '未填写' : worker.phone,
+          ),
+          _buildIdCardRow(theme, worker),
+        ],
+      ),
+    );
+  }
+
+  /// 身份证号：默认遮罩，点右侧眼睛切换完整显示。
+  Widget _buildIdCardRow(ThemeData theme, Worker worker) {
+    final labelStyle =
+        theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted);
+    if (worker.idCard.isEmpty) {
+      return KeyValueRow(label: '身份证号', value: '未填写');
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          SizedBox(width: 96, child: Text('身份证号', style: labelStyle)),
+          Expanded(
+            child: Text(
+              _showIdCard ? worker.idCard : worker.maskedIdCard,
+              textAlign: TextAlign.right,
+              style: theme.textTheme.bodyLarge
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+          IconButton(
+            tooltip: _showIdCard ? '隐藏中间位' : '显示完整号码',
+            visualDensity: VisualDensity.compact,
+            icon: Icon(
+              _showIdCard
+                  ? Icons.visibility_off_outlined
+                  : Icons.visibility_outlined,
+              size: 20,
+              color: AppTheme.muted,
+            ),
+            onPressed: () => setState(() => _showIdCard = !_showIdCard),
           ),
         ],
       ),

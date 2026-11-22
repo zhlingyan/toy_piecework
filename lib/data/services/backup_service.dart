@@ -22,6 +22,7 @@ class BackupSummary {
     required this.adjustmentCount,
     required this.lockedMonthCount,
     this.processCount = 0,
+    this.settlementCount = 0,
     required this.minDate,
     required this.maxDate,
   });
@@ -37,6 +38,9 @@ class BackupSummary {
 
   /// 工序选项条数（v3 起才有；老备份为 0）。
   final int processCount;
+
+  /// 结算标记条数（v4 起才有；老备份为 0）。
+  final int settlementCount;
 
   /// 流水日期跨度，用于恢复前让管理员确认「是不是这份账」。
   final String? minDate;
@@ -92,6 +96,7 @@ class BackupService {
     Tables.adjustments,
     Tables.lockedMonths,
     Tables.processPresets,
+    Tables.settlementMarks,
   ];
 
   /// 导出整本账。默认不含「删除已超 30 天」的流水，可在界面勾选包含。
@@ -121,6 +126,10 @@ class BackupService {
       Tables.processPresets,
       orderBy: 'is_builtin DESC, sort_order ASC, created_at ASC',
     );
+    final settlementMarks = await executor.query(
+      Tables.settlementMarks,
+      orderBy: 'month ASC, worker_id ASC',
+    );
 
     return {
       'format': Defaults.backupFormat,
@@ -133,6 +142,7 @@ class BackupService {
         Tables.adjustments: adjustments.length,
         Tables.lockedMonths: locked.length,
         Tables.processPresets: processes.length,
+        Tables.settlementMarks: settlementMarks.length,
       },
       'data': {
         Tables.workers: workers,
@@ -141,6 +151,7 @@ class BackupService {
         Tables.adjustments: adjustments,
         Tables.lockedMonths: locked,
         Tables.processPresets: processes,
+        Tables.settlementMarks: settlementMarks,
       },
     };
   }
@@ -258,6 +269,9 @@ class BackupService {
           'id': requireString('id'),
           'code': row['code']?.toString() ?? '',
           'name': requireString('name'),
+          // v3 及更早的备份没有联系方式，一律补空串（字段选填）
+          'phone': row['phone']?.toString() ?? '',
+          'id_card': row['id_card']?.toString() ?? '',
           'pinyin_initials': row['pinyin_initials']?.toString() ?? '',
           'is_archived': (row['is_archived'] as num?)?.toInt() ?? 0,
           'created_at': requireInt('created_at'),
@@ -382,6 +396,18 @@ class BackupService {
           'sort_order': (row['sort_order'] as num?)?.toInt() ?? 0,
           'created_at': (row['created_at'] as num?)?.toInt() ?? 0,
         };
+      case Tables.settlementMarks:
+        final month = requireString('month');
+        if (!Dates.isValidYm(month)) {
+          throw BackupFailure('settlement_marks 第 ${index + 1} 条月份格式错误：$month');
+        }
+        return {
+          'worker_id': requireString('worker_id'),
+          'month': month,
+          'is_settled': ((row['is_settled'] as num?)?.toInt() ?? 0) == 0 ? 0 : 1,
+          'settled_at': (row['settled_at'] as num?)?.toInt(),
+          'updated_at': (row['updated_at'] as num?)?.toInt() ?? 0,
+        };
       case Tables.lockedMonths:
         final month = requireString('month');
         if (!Dates.isValidYm(month)) {
@@ -420,6 +446,7 @@ class BackupService {
       recordCount: records.length,
       adjustmentCount: payload[Tables.adjustments]?.length ?? 0,
       processCount: payload[Tables.processPresets]?.length ?? 0,
+      settlementCount: payload[Tables.settlementMarks]?.length ?? 0,
       lockedMonthCount: payload[Tables.lockedMonths]?.length ?? 0,
       minDate: minDate,
       maxDate: maxDate,

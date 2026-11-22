@@ -9,6 +9,7 @@ import 'package:toy_piecework/data/repositories/adjustment_repository.dart';
 import 'package:toy_piecework/data/repositories/month_lock_repository.dart';
 import 'package:toy_piecework/data/repositories/piece_record_repository.dart';
 import 'package:toy_piecework/data/repositories/process_repository.dart';
+import 'package:toy_piecework/data/repositories/settlement_mark_repository.dart';
 import 'package:toy_piecework/data/repositories/settlement_repository.dart';
 import 'package:toy_piecework/data/repositories/toy_repository.dart';
 import 'package:toy_piecework/data/repositories/worker_repository.dart';
@@ -29,6 +30,7 @@ class Fixture {
         processes = ProcessRepository(db),
         months = MonthLockRepository(db),
         settlements = SettlementRepository(db),
+        settlementMarks = SettlementMarkRepository(db),
         backup = BackupService(db),
         legacy = LegacyImportService(db),
         reports = ReportService(db);
@@ -53,6 +55,7 @@ class Fixture {
   final ProcessRepository processes;
   final MonthLockRepository months;
   final SettlementRepository settlements;
+  final SettlementMarkRepository settlementMarks;
   final BackupService backup;
   final LegacyImportService legacy;
   final ReportService reports;
@@ -64,8 +67,18 @@ class Fixture {
     }
   }
 
-  Future<Worker> addWorker(String name, {String? code}) =>
-      workers.create(name: name, code: code);
+  Future<Worker> addWorker(
+    String name, {
+    String? code,
+    String phone = '',
+    String idCard = '',
+  }) =>
+      workers.create(
+        name: name,
+        code: code,
+        phone: phone,
+        idCard: idCard,
+      );
 
   Future<Toy> addToy(
     String name, {

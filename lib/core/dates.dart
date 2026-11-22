@@ -83,6 +83,23 @@ class Dates {
   /// `HH:mm` 形式的展示，附带「上午/下午」可读性（列表里用）。
   static String hhmmLabel(int minuteOfDay) => hhmm(minuteOfDay);
 
+  static const List<String> _weekdayLabels = [
+    '周一',
+    '周二',
+    '周三',
+    '周四',
+    '周五',
+    '周六',
+    '周日',
+  ];
+
+  /// `YYYY-MM-DD` → `周三`。日期非法时返回空串，界面自行决定怎么兜底。
+  static String weekdayLabel(String value) {
+    final date = tryParseYmd(value);
+    if (date == null) return '';
+    return _weekdayLabels[date.weekday - 1];
+  }
+
   /// 把 `YYYY-MM-DD` + 分钟数合成为 `DateTime`，用于日期+时间选择器。
   static DateTime combine(String ymdValue, int minuteOfDay) {
     final d = tryParseYmd(ymdValue);

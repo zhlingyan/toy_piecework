@@ -241,6 +241,12 @@ void main() {
       presets.map((row) => row['name']),
       contains(Defaults.defaultProcess),
     );
+
+    // 10) v4：联系方式选填，老档案补空串；结算表为空（历史一律未结算）
+    final worker = (await appDb.raw.query('workers')).single;
+    expect(worker['phone'], '');
+    expect(worker['id_card'], '');
+    expect(await appDb.raw.query('settlement_marks'), isEmpty);
   });
 
   test('升级后老流水写入新字段仍能正常读回', () async {
@@ -319,6 +325,20 @@ void main() {
     expect(
       adjustmentColumns.map((c) => c['name']),
       containsAll(<String>['work_minutes', 'hourly_rate_cents']),
+    );
+
+    // v4：工人档案带联系方式，结算标记表已就位
+    final workerColumns = await appDb.raw.rawQuery('PRAGMA table_info(workers)');
+    expect(
+      workerColumns.map((c) => c['name']),
+      containsAll(<String>['phone', 'id_card']),
+    );
+    final markColumns = await appDb.raw.rawQuery(
+      'PRAGMA table_info(settlement_marks)',
+    );
+    expect(
+      markColumns.map((c) => c['name']),
+      containsAll(<String>['worker_id', 'month', 'is_settled']),
     );
   });
 
@@ -419,5 +439,91 @@ void main() {
     )).single;
     expect(hourly['work_minutes'], 210);
     expect(hourly['hourly_rate_cents'], 2500);
+  });
+
+  test('v3 库升级到 v4：老工人没有电话/身份证，账目与标记都不受影响', () async {
+    final v3Path = p.join(tempDir.path, 'v3.db');
+    final v3 = await databaseFactoryFfi.openDatabase(
+      v3Path,
+      options: OpenDatabaseOptions(
+        version: 3,
+        onCreate: (db, version) async {
+          for (final statement in v1Statements) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV1ToV2) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV2ToV3) {
+            await db.execute(statement);
+          }
+        },
+      ),
+    );
+    await v3.insert('workers', {
+      'id': 'w1',
+      'code': 'W001',
+      'name': '张三',
+      'pinyin_initials': 'ZS',
+      'is_archived': 0,
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    await v3.insert('piece_records', {
+      'id': 'r1',
+      'date': '2026-06-10',
+      'minute_of_day': 600,
+      'worker_id': 'w1',
+      'toy_id': 't1',
+      'worker_name_snapshot': '张三',
+      'toy_name_snapshot': '小熊',
+      'process_snapshot': '整件',
+      'unit_price_snapshot': 2000,
+      'quantity': 100,
+      'subtotal_cents': 2000,
+      'remark': '',
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    await v3.close();
+
+    final appDb = await AppDatabase.open(
+      path: v3Path,
+      factoryOverride: databaseFactoryFfi,
+    );
+    addTearDown(() async => appDb.close());
+
+    expect(await appDb.raw.getVersion(), Schema.version);
+
+    final worker = (await appDb.raw.query('workers')).single;
+    expect(worker['phone'], '', reason: '老档案电话为空，界面显示「未填写」');
+    expect(worker['id_card'], '');
+    expect(worker['name'], '张三');
+
+    final record = (await appDb.raw.query('piece_records')).single;
+    expect(record['subtotal_cents'], 2000, reason: '升级不动金额');
+
+    // 历史账目不能被自动标成已结算
+    expect(await appDb.raw.query('settlement_marks'), isEmpty);
+
+    // 迁移后能直接写联系方式与结算标记
+    await appDb.raw.update(
+      'workers',
+      {'phone': '13800001111'},
+      where: 'id = ?',
+      whereArgs: ['w1'],
+    );
+    await appDb.raw.insert('settlement_marks', {
+      'worker_id': 'w1',
+      'month': '2026-06',
+      'is_settled': 1,
+      'settled_at': 2,
+      'updated_at': 2,
+    });
+    expect(
+      (await appDb.raw.query('workers')).single['phone'],
+      '13800001111',
+    );
+    expect((await appDb.raw.query('settlement_marks')).length, 1);
   });
 }
