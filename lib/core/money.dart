@@ -52,6 +52,38 @@ class Money {
   /// 把「元」字符串解析为分，用于调整项金额录入（最多 2 位小数）。
   static int? tryParseCents(String raw) => _parseScaled(raw, 2);
 
+  /// 计时工资（分）= round(工时分钟 × 时薪分/时 ÷ 60)。
+  ///
+  /// 全整数运算，只在最后一步四舍五入一次：
+  /// 例 210 分钟（3.5 小时）× 2500 分/时 = 8750 分 = 87.50 元。
+  static int hourlyCents({required int minutes, required int rateCentsPerHour}) {
+    if (minutes <= 0 || rateCentsPerHour <= 0) return 0;
+    return (minutes * rateCentsPerHour + 30) ~/ 60;
+  }
+
+  /// 把「小时」字符串解析成分钟，最多 2 位小数（0.25 小时 = 15 分钟）。
+  ///
+  /// 非法或负数返回 null，由调用方给提示。
+  static int? tryParseHoursToMinutes(String raw) {
+    final hundredths = _parseScaled(raw.trim(), 2);
+    if (hundredths == null || hundredths < 0) return null;
+    // 百分之一小时 → 分钟，half-up 取整
+    return (hundredths * 60 + 50) ~/ 100;
+  }
+
+  /// 工时展示：210 => "3.5"，15 => "0.25"，120 => "2"。
+  static String formatHours(int minutes) {
+    if (minutes <= 0) return '0';
+    final whole = minutes ~/ 60;
+    final rest = minutes % 60;
+    if (rest == 0) return '$whole';
+    var frac = ((rest * 100 + 30) ~/ 60).toString().padLeft(2, '0');
+    while (frac.endsWith('0')) {
+      frac = frac.substring(0, frac.length - 1);
+    }
+    return '$whole.$frac';
+  }
+
   static int? _parseScaled(String raw, int scale) {
     var s = normalizeDigits(raw).trim();
     if (s.isEmpty) return null;

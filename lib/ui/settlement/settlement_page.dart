@@ -7,6 +7,7 @@ import '../../services/app_services.dart';
 import '../../state/selection_state.dart';
 import '../common/export_sheet.dart';
 import '../common/ui_kit.dart';
+import '../count/adjustment_sheet.dart';
 import '../reports/annual_page.dart';
 import '../theme.dart';
 import '../trash/trash_page.dart';
@@ -150,6 +151,27 @@ class _SettlementPageState extends State<SettlementPage> {
   }
 
   /// 导出当前区间的结算表：一人一行 + 合计行，Excel 直接打开不乱码。
+  /// 从结算页直接记一笔补贴 / 扣款，不用先点进某个工人。
+  Future<void> _addAdjustment() async {
+    final services = AppScope.read(context);
+    final workers = await services.workers.listActive();
+    if (!mounted) return;
+    if (workers.isEmpty) {
+      showToast(context, '还没有工人档案，请先建档', isError: true);
+      return;
+    }
+    final saved = await showAdjustmentSheet(
+      context: context,
+      services: services,
+      defaultDate: Dates.ymd(DateTime.now()),
+      workers: workers,
+    );
+    if (saved == true) {
+      services.notifyDataChanged();
+      _load();
+    }
+  }
+
   Future<void> _exportCsv() async {
     final result = _result;
     if (result == null || result.workers.isEmpty) {
@@ -180,6 +202,11 @@ class _SettlementPageState extends State<SettlementPage> {
         backgroundColor: AppTheme.surface,
         surfaceTintColor: Colors.transparent,
         actions: [
+          IconButton(
+            tooltip: '记一笔补贴 / 扣款',
+            icon: const Icon(Icons.add_card_outlined),
+            onPressed: _addAdjustment,
+          ),
           IconButton(
             tooltip: '导出 CSV',
             icon: const Icon(Icons.file_download_outlined),
@@ -356,6 +383,10 @@ class _SettlementPageState extends State<SettlementPage> {
               _miniStat('预支', Money.formatCents(result?.advanceTotal ?? 0)),
               _miniStat('笔数', '${result?.recordCount ?? 0}'),
             ],
+          ),
+          const SizedBox(height: 10),
+          MutedText(
+            '补贴 / 计时 / 扣款 / 预支的每一笔，点工人行进去可以查看、补录、修改。',
           ),
         ],
       ),

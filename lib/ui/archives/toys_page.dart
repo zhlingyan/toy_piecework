@@ -7,6 +7,7 @@ import '../../data/models/toy.dart';
 import '../../domain/pinyin/pinyin_helper.dart';
 import '../../services/app_services.dart';
 import '../common/ui_kit.dart';
+import 'process_picker.dart';
 import '../theme.dart';
 
 /// 玩具与工序档案：一个「玩具 + 工序」组合一条档案，各自带单价。
@@ -319,6 +320,19 @@ class _ToyEditorState extends State<_ToyEditor> {
     if (mounted) setState(() {});
   }
 
+  /// 点工序弹出选择列表：常用项直接点，没有就现场新增。
+  Future<void> _pickProcess() async {
+    final picked = await showProcessPicker(
+      context: context,
+      services: widget.services,
+      current: _process.text,
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _process.text = picked;
+    });
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     if (_name.text.trim().isEmpty) {
@@ -404,12 +418,21 @@ class _ToyEditorState extends State<_ToyEditor> {
               ),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _process,
-              style: const TextStyle(fontSize: 18),
-              decoration: const InputDecoration(
-                labelText: '工序',
-                hintText: '默认「整件」，也可填：缝头 / 装眼 / 打包',
+            // 只读 + 点击弹选择：避免每次手打，也避免打出同义不同字导致报表被拆散
+            InkWell(
+              onTap: _pickProcess,
+              borderRadius: BorderRadius.circular(4),
+              child: IgnorePointer(
+                child: TextField(
+                  controller: _process,
+                  readOnly: true,
+                  style: const TextStyle(fontSize: 18),
+                  decoration: const InputDecoration(
+                    labelText: '工序',
+                    helperText: '点这里从常用工序里选，也可以新增',
+                    suffixIcon: Icon(Icons.arrow_drop_down),
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 12),

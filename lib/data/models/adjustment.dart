@@ -15,6 +15,8 @@ class Adjustment {
     required this.createdAt,
     required this.updatedAt,
     this.minuteOfDay = 0,
+    this.workMinutes = 0,
+    this.hourlyRateCents = 0,
   });
 
   factory Adjustment.fromMap(Map<String, Object?> map) {
@@ -30,6 +32,8 @@ class Adjustment {
       createdAt: map['created_at']! as int,
       updatedAt: map['updated_at']! as int,
       minuteOfDay: (map['minute_of_day'] as int?) ?? 0,
+      workMinutes: (map['work_minutes'] as int?) ?? 0,
+      hourlyRateCents: (map['hourly_rate_cents'] as int?) ?? 0,
     );
   }
 
@@ -52,6 +56,30 @@ class Adjustment {
   /// 当天第几分钟（0..1439），用于同日内排序与展示。
   final int minuteOfDay;
 
+  /// 计时工资的工时（分钟）。0 表示「直接填金额」，不按工时算。
+  final int workMinutes;
+
+  /// 计时工资的时薪（分/小时）。0 表示未按工时算。
+  final int hourlyRateCents;
+
+  /// 是否按「工时 × 时薪」计价（而不是直接填一个金额）。
+  bool get isByWorkTime => workMinutes > 0 && hourlyRateCents > 0;
+
+  /// 计时明细，例：`3.5 小时 × 25.00 元/时`；其它类型返回空串。
+  String get workTimeLabel {
+    if (!isByWorkTime) return '';
+    return '${Money.formatHours(workMinutes)} 小时 × '
+        '${Money.formatCents(hourlyRateCents)} 元/时';
+  }
+
+  /// 列表/工资条用的一句摘要：补贴显示名称，计时显示工时明细。
+  String get summaryLabel {
+    if (isByWorkTime) {
+      return remark.isEmpty ? workTimeLabel : '$workTimeLabel · $remark';
+    }
+    return remark;
+  }
+
   String get timeLabel {
     final h = (minuteOfDay ~/ 60).toString().padLeft(2, '0');
     final m = (minuteOfDay % 60).toString().padLeft(2, '0');
@@ -68,6 +96,8 @@ class Adjustment {
   Adjustment copyWith({
     String? date,
     int? minuteOfDay,
+    int? workMinutes,
+    int? hourlyRateCents,
     String? workerId,
     String? workerNameSnapshot,
     AdjustmentType? type,
@@ -81,6 +111,8 @@ class Adjustment {
       id: id,
       date: date ?? this.date,
       minuteOfDay: minuteOfDay ?? this.minuteOfDay,
+      workMinutes: workMinutes ?? this.workMinutes,
+      hourlyRateCents: hourlyRateCents ?? this.hourlyRateCents,
       workerId: workerId ?? this.workerId,
       workerNameSnapshot: workerNameSnapshot ?? this.workerNameSnapshot,
       type: type ?? this.type,
@@ -99,6 +131,8 @@ class Adjustment {
         'worker_name_snapshot': workerNameSnapshot,
         'type': type.code,
         'amount_cents': amountCents,
+        'work_minutes': workMinutes,
+        'hourly_rate_cents': hourlyRateCents,
         'remark': remark,
         'deleted_at': deletedAt,
         'created_at': createdAt,

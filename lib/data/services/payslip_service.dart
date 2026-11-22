@@ -430,8 +430,12 @@ class _PayslipRow {
 
   factory _PayslipRow.adjustment(Adjustment adjustment) {
     final positive = adjustment.type.sign > 0;
+    // 计时按工时算的，工资条上要写清「几小时 × 多少钱」，不能只给一个总数
+    final detail = adjustment.isByWorkTime
+        ? '${adjustment.workTimeLabel} · ${adjustment.remark}'
+        : adjustment.remark;
     return _PayslipRow(
-      title: '${adjustment.type.label} · ${adjustment.remark}',
+      title: '${adjustment.type.label} · $detail',
       subtitle: adjustment.date,
       amount: Money.formatCentsSigned(adjustment.signedCents),
       amountColor: positive ? const Color(0xFF1B7F3B) : const Color(0xFFC62828),

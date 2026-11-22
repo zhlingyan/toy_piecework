@@ -39,6 +39,10 @@ class AppDatabase {
           for (final statement in Schema.createStatements) {
             await db.execute(statement);
           }
+          // 建库即灌入预置工序，否则第一次打开玩具编辑器会是一个空列表。
+          for (final statement in Schema.seedProcessStatements) {
+            await db.execute(statement);
+          }
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           // 升级必须在一个事务里完成：任一步失败就整体回滚，
@@ -46,6 +50,14 @@ class AppDatabase {
           await db.transaction((txn) async {
             if (oldVersion < 2) {
               for (final statement in Schema.migrateV1ToV2) {
+                await txn.execute(statement);
+              }
+            }
+            if (oldVersion < 3) {
+              for (final statement in Schema.migrateV2ToV3) {
+                await txn.execute(statement);
+              }
+              for (final statement in Schema.seedProcessStatements) {
                 await txn.execute(statement);
               }
             }

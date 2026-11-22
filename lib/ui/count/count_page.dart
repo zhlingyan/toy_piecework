@@ -6,6 +6,7 @@ import '../../core/dates.dart';
 import '../../core/failures.dart';
 import '../../core/id_gen.dart';
 import '../../core/money.dart';
+import '../../data/models/adjustment.dart';
 import '../../data/models/piece_record.dart';
 import '../../data/models/toy.dart';
 import '../../data/models/worker.dart';
@@ -37,6 +38,9 @@ class _CountPageState extends State<CountPage> {
   List<Worker> _workers = const [];
   List<Toy> _toys = const [];
   List<PieceRecord> _records = const [];
+
+  /// 当天的调整项（补贴 / 计时 / 扣款 / 预支）。
+  List<Adjustment> _adjustments = const [];
   bool _locked = false;
   bool _loading = true;
   bool _saving = false;
@@ -107,6 +111,11 @@ class _CountPageState extends State<CountPage> {
     final workers = await services.workers.listActive();
     final toys = await services.toys.listActive();
     final records = await services.records.listByDate(date);
+    final adjustments = Dates.isValidYmd(date)
+        ? await services.adjustments.listRange(
+            DateRange(start: date, end: date),
+          )
+        : const <Adjustment>[];
     final locked = Dates.isValidYmd(date)
         ? await services.months.isLocked(Dates.ymOfYmd(date))
         : false;
@@ -115,6 +124,7 @@ class _CountPageState extends State<CountPage> {
       _workers = workers;
       _toys = toys;
       _records = records;
+      _adjustments = adjustments;
       _locked = locked;
       _loading = false;
       _syncOvertimeAuto(notify: false);
@@ -377,22 +387,65 @@ class _CountPageState extends State<CountPage> {
     }
   }
 
-  Future<void> _openAdjustment() async {
+  /// 打开调整项录入。[type] 由四个快捷入口决定，[existing] 非空为修改。
+  Future<void> _openAdjustment({
+    AdjustmentType? type,
+    Adjustment? existing,
+  }) async {
     final services = _services;
     if (services == null) return;
+    if (_locked) {
+      showToast(context, '该月已锁账，不能修改调整项', isError: true);
+      return;
+    }
     if (_workers.isEmpty) {
       showToast(context, '还没有工人档案，请先建档', isError: true);
       return;
+    }
+    // 改历史调整项时，那个人可能已经被归档（不在 active 列表里），
+    // 否则弹窗里选不中他，保存会被「请选择工人」拦住。
+    var workers = _workers;
+    if (existing != null &&
+        !workers.any((worker) => worker.id == existing.workerId)) {
+      workers = await services.workers.listAll();
+      if (!mounted) return;
     }
     final saved = await showAdjustmentSheet(
       context: context,
       services: services,
       defaultDate: widget.selection.date,
       defaultWorkerId: widget.selection.workerId,
-      workers: _workers,
+      workers: workers,
+      initialType: type ?? AdjustmentType.bonus,
+      existing: existing,
     );
     if (saved == true) {
       await _reload();
+    }
+  }
+
+  Future<void> _deleteAdjustment(Adjustment adjustment) async {
+    final services = _services;
+    if (services == null) return;
+    final ok = await showConfirmDialog(
+      context,
+      title: '删除这笔${adjustment.type.label}？',
+      message: '${adjustment.workerNameSnapshot} · ${adjustment.remark}\n'
+          '金额 ${Money.formatCentsSigned(adjustment.signedCents)} 元\n'
+          '删除后 30 天内可在回收站恢复。',
+      confirmText: '删除',
+      danger: true,
+    );
+    if (!ok) return;
+    try {
+      await services.adjustments.softDelete(adjustment.id);
+      services.notifyDataChanged();
+      await _reload();
+      if (!mounted) return;
+      showToast(context, '已移到回收站，30 天内可恢复');
+    } on AppFailure catch (error) {
+      if (!mounted) return;
+      showToast(context, error.message, isError: true);
     }
   }
 
@@ -487,37 +540,27 @@ class _CountPageState extends State<CountPage> {
                 const SizedBox(height: 14),
                 _buildQuantityCard(theme, subtotal),
                 const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: FilledButton.icon(
-                        onPressed: (_saving || _locked) ? null : _save,
-                        icon: _saving
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.4,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(Icons.check_circle_outline, size: 26),
-                        label: Text(_saving ? '正在保存…' : '保存这一笔'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _openAdjustment,
-                        icon: const Icon(Icons.add_card_outlined),
-                        label: const Text('调整项'),
-                      ),
-                    ),
-                  ],
+                FilledButton.icon(
+                  onPressed: (_saving || _locked) ? null : _save,
+                  icon: _saving
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.check_circle_outline, size: 26),
+                  label: Text(_saving ? '正在保存…' : '保存这一笔'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 _buildKeepSwitches(theme),
+                const SizedBox(height: 8),
+                _buildAdjustmentSection(theme, date),
                 const SizedBox(height: 8),
                 SectionCard(
                   title: '$date 的流水',
@@ -542,6 +585,140 @@ class _CountPageState extends State<CountPage> {
                 ),
               ],
             ),
+    );
+  }
+
+  /// 补贴 / 计时 / 扣款 / 预支：四个方向各一个入口，当天已录入的逐条列出。
+  ///
+  /// 放在计数页而不是藏进菜单里，是因为这四项和计件是同一个动作——
+  /// 车间里记一笔活的同时顺手记一笔补贴或扣款，不该让人去别处找。
+  Widget _buildAdjustmentSection(ThemeData theme, String date) {
+    final total =
+        _adjustments.fold<int>(0, (sum, item) => sum + item.signedCents);
+    return SectionCard(
+      title: '补贴 / 计时 / 扣款 / 预支',
+      trailing: Text(
+        _adjustments.isEmpty ? '暂无' : '合计 ${Money.formatCentsSigned(total)}',
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: total == 0
+              ? AppTheme.muted
+              : (total > 0 ? AppTheme.success : AppTheme.danger),
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (final type in AdjustmentType.values)
+                OutlinedButton.icon(
+                  onPressed:
+                      _locked ? null : () => _openAdjustment(type: type),
+                  icon: Icon(_adjustmentIcon(type), size: 20),
+                  label: Text(type.label),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 46),
+                    foregroundColor:
+                        type.sign > 0 ? AppTheme.success : AppTheme.danger,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_adjustments.isEmpty)
+            const MutedText(
+              '这天还没有补贴 / 计时 / 扣款 / 预支。点上面的按钮记一笔，'
+              '金额会直接进结算和工资条。',
+            )
+          else
+            for (var index = 0; index < _adjustments.length; index++) ...[
+              if (index > 0) const Divider(height: 18),
+              _buildAdjustmentRow(theme, _adjustments[index]),
+            ],
+        ],
+      ),
+    );
+  }
+
+  IconData _adjustmentIcon(AdjustmentType type) => switch (type) {
+        AdjustmentType.bonus => Icons.card_giftcard,
+        AdjustmentType.hourly => Icons.timer_outlined,
+        AdjustmentType.deduction => Icons.remove_circle_outline,
+        AdjustmentType.advance => Icons.payments_outlined,
+      };
+
+  Widget _buildAdjustmentRow(ThemeData theme, Adjustment adjustment) {
+    final positive = adjustment.signedCents > 0;
+    final color = positive ? AppTheme.success : AppTheme.danger;
+    return InkWell(
+      onTap: _locked ? null : () => _openAdjustment(existing: adjustment),
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                adjustment.type.label,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    adjustment.summaryLabel,
+                    style: theme.textTheme.bodyLarge
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 2),
+                  // 人名、时刻、金额挤在一行，超大字号下靠 Wrap 自动折行
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 2,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        '${adjustment.workerNameSnapshot} · '
+                        '${adjustment.timeLabel}',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: AppTheme.muted),
+                      ),
+                      Text(
+                        '${Money.formatCentsSigned(adjustment.signedCents)} 元',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: color,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            if (!_locked)
+              IconButton(
+                tooltip: '删除这笔${adjustment.type.label}',
+                icon: const Icon(Icons.delete_outline, size: 20),
+                onPressed: () => _deleteAdjustment(adjustment),
+              ),
+          ],
+        ),
+      ),
     );
   }
 

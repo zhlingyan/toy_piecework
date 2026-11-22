@@ -3,14 +3,15 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:toy_piecework/core/constants.dart';
 import 'package:toy_piecework/data/db/app_database.dart';
 import 'package:toy_piecework/data/db/schema.dart';
 
-/// v1 → v2 迁移测试。
+/// 数据库迁移测试（v1 / v2 → 最新版）。
 ///
 /// 这是整个改动里**最危险的一步**：车间手机上已经记了几个月账，
 /// 升级时如果加列失败或回填出错，就是实打实的对不上账。
-/// 所以这里手工造一个真正的 v1 库，再用 v2 打开，逐项核对。
+/// 所以这里手工造真正的 v1 / v2 库，再用最新版打开，逐项核对。
 void main() {
   late Directory tempDir;
   late String dbPath;
@@ -177,7 +178,7 @@ void main() {
     await db.close();
   }
 
-  test('v1 库升级到 v2：数据一条不少，金额一分不差', () async {
+  test('v1 库升级到最新版：数据一条不少，金额一分不差', () async {
     // 2026-06-10 15:42 本地时间
     final localTime = DateTime(2026, 6, 10, 15, 42);
     await createV1Database(createdAt: localTime.millisecondsSinceEpoch);
@@ -226,6 +227,20 @@ void main() {
       "AND name = 'idx_records_date_minute'",
     );
     expect(indexes.length, 1);
+
+    // 8) v3：调整项加了工时/时薪，老数据一律按「直接填金额」处理
+    final adjustment = adjustments.single;
+    expect(adjustment['work_minutes'], 0);
+    expect(adjustment['hourly_rate_cents'], 0);
+    expect(adjustment['amount_cents'], 2000, reason: '金额一分不动');
+
+    // 9) v3：工序表已建好并灌入预置项
+    final presets = await appDb.raw.query('process_presets');
+    expect(presets.length, Defaults.builtinProcesses.length);
+    expect(
+      presets.map((row) => row['name']),
+      contains(Defaults.defaultProcess),
+    );
   });
 
   test('升级后老流水写入新字段仍能正常读回', () async {
@@ -268,7 +283,7 @@ void main() {
     expect(rows.single['overtime_price_snapshot'], 3000);
   });
 
-  test('全新安装直接建成 v2，不需要迁移', () async {
+  test('全新安装直接建成最新版，不需要迁移', () async {
     final freshPath = p.join(tempDir.path, 'fresh.db');
     final appDb = await AppDatabase.open(
       path: freshPath,
@@ -294,5 +309,115 @@ void main() {
       toyColumns.map((c) => c['name']),
       contains('overtime_price_ten_thousandth'),
     );
+
+    // 全新安装也必须有预置工序，否则第一次建档案就是空列表
+    final presets = await appDb.raw.query('process_presets');
+    expect(presets.length, Defaults.builtinProcesses.length);
+
+    final adjustmentColumns =
+        await appDb.raw.rawQuery('PRAGMA table_info(adjustments)');
+    expect(
+      adjustmentColumns.map((c) => c['name']),
+      containsAll(<String>['work_minutes', 'hourly_rate_cents']),
+    );
+  });
+
+  test('v2 库升级到 v3：以前的工序名自动沉淀成可选的自定义项', () async {
+    // 造一个真正的 v2 库：v1 建表 + v2 的加列语句
+    final v2 = await databaseFactoryFfi.openDatabase(
+      dbPath,
+      options: OpenDatabaseOptions(
+        version: 2,
+        onCreate: (db, version) async {
+          for (final statement in v1Statements) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV1ToV2) {
+            await db.execute(statement);
+          }
+        },
+      ),
+    );
+
+    await v2.insert('workers', {
+      'id': 'w1',
+      'code': 'W001',
+      'name': '张三',
+      'pinyin_initials': 'ZS',
+      'is_archived': 0,
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    // 手打过一个不在预置列表里的工序
+    await v2.insert('toys', {
+      'id': 't1',
+      'name': '小熊',
+      'process': '打眼',
+      'unit_price_ten_thousandth': 2000,
+      'overtime_price_ten_thousandth': 0,
+      'pinyin_initials': 'XX',
+      'is_archived': 0,
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    await v2.insert('adjustments', {
+      'id': 'a1',
+      'date': '2026-06-10',
+      'minute_of_day': 600,
+      'worker_id': 'w1',
+      'worker_name_snapshot': '张三',
+      'type': 'bonus',
+      'amount_cents': 2000,
+      'remark': '全勤',
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    await v2.close();
+
+    final appDb = await AppDatabase.open(
+      path: dbPath,
+      factoryOverride: databaseFactoryFfi,
+    );
+    addTearDown(() async => appDb.close());
+
+    expect(await appDb.raw.getVersion(), Schema.version);
+
+    // 预置项齐全 + 手打过的「打眼」被导入为自定义项
+    final presets = await appDb.raw.query('process_presets');
+    final names = presets.map((row) => row['name'] as String).toList();
+    expect(names.length, Defaults.builtinProcesses.length + 1);
+    expect(names, contains('打眼'));
+    final custom = presets.firstWhere((row) => row['name'] == '打眼');
+    expect(custom['is_builtin'], 0);
+
+    // 老调整项金额不动，新列默认 0
+    final adjustment = (await appDb.raw.query('adjustments')).single;
+    expect(adjustment['amount_cents'], 2000);
+    expect(adjustment['work_minutes'], 0);
+    expect(adjustment['hourly_rate_cents'], 0);
+    expect(adjustment['minute_of_day'], 600, reason: 'v2 已回填的时间不能被覆盖');
+
+    // 迁移后能直接按工时记一笔新的计时工资
+    await appDb.raw.insert('adjustments', {
+      'id': 'a2',
+      'date': '2026-06-11',
+      'minute_of_day': 1200,
+      'worker_id': 'w1',
+      'worker_name_snapshot': '张三',
+      'type': 'hourly',
+      'amount_cents': 8750,
+      'work_minutes': 210,
+      'hourly_rate_cents': 2500,
+      'remark': '打包',
+      'created_at': 2,
+      'updated_at': 2,
+    });
+    final hourly = (await appDb.raw.query(
+      'adjustments',
+      where: 'id = ?',
+      whereArgs: ['a2'],
+    )).single;
+    expect(hourly['work_minutes'], 210);
+    expect(hourly['hourly_rate_cents'], 2500);
   });
 }

@@ -4,6 +4,7 @@ import '../data/db/app_database.dart';
 import '../data/repositories/adjustment_repository.dart';
 import '../data/repositories/month_lock_repository.dart';
 import '../data/repositories/piece_record_repository.dart';
+import '../data/repositories/process_repository.dart';
 import '../data/repositories/settlement_repository.dart';
 import '../data/repositories/toy_repository.dart';
 import '../data/repositories/worker_repository.dart';
@@ -35,6 +36,7 @@ class AppServices {
         toys = ToyRepository(db),
         records = PieceRecordRepository(db),
         adjustments = AdjustmentRepository(db),
+        processes = ProcessRepository(db),
         months = MonthLockRepository(db),
         settlements = SettlementRepository(db),
         backup = BackupService(db),
@@ -54,6 +56,7 @@ class AppServices {
   final ToyRepository toys;
   final PieceRecordRepository records;
   final AdjustmentRepository adjustments;
+  final ProcessRepository processes;
   final MonthLockRepository months;
   final SettlementRepository settlements;
   final BackupService backup;

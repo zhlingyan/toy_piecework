@@ -6,6 +6,7 @@ import '../../core/clock.dart';
 import '../../core/constants.dart';
 import '../../core/dates.dart';
 import '../../core/failures.dart';
+import '../../core/money.dart';
 import '../db/app_database.dart';
 import '../db/schema.dart';
 
@@ -20,6 +21,7 @@ class BackupSummary {
     required this.recordCount,
     required this.adjustmentCount,
     required this.lockedMonthCount,
+    this.processCount = 0,
     required this.minDate,
     required this.maxDate,
   });
@@ -32,6 +34,9 @@ class BackupSummary {
   final int recordCount;
   final int adjustmentCount;
   final int lockedMonthCount;
+
+  /// 工序选项条数（v3 起才有；老备份为 0）。
+  final int processCount;
 
   /// 流水日期跨度，用于恢复前让管理员确认「是不是这份账」。
   final String? minDate;
@@ -86,6 +91,7 @@ class BackupService {
     Tables.pieceRecords,
     Tables.adjustments,
     Tables.lockedMonths,
+    Tables.processPresets,
   ];
 
   /// 导出整本账。默认不含「删除已超 30 天」的流水，可在界面勾选包含。
@@ -111,6 +117,10 @@ class BackupService {
       'ORDER BY date ASC, created_at ASC',
     );
     final locked = await executor.query(Tables.lockedMonths, orderBy: 'month ASC');
+    final processes = await executor.query(
+      Tables.processPresets,
+      orderBy: 'is_builtin DESC, sort_order ASC, created_at ASC',
+    );
 
     return {
       'format': Defaults.backupFormat,
@@ -122,6 +132,7 @@ class BackupService {
         Tables.pieceRecords: records.length,
         Tables.adjustments: adjustments.length,
         Tables.lockedMonths: locked.length,
+        Tables.processPresets: processes.length,
       },
       'data': {
         Tables.workers: workers,
@@ -129,6 +140,7 @@ class BackupService {
         Tables.pieceRecords: records,
         Tables.adjustments: adjustments,
         Tables.lockedMonths: locked,
+        Tables.processPresets: processes,
       },
     };
   }
@@ -326,9 +338,23 @@ class BackupService {
         if (AdjustmentType.tryFromCode(type) == null) {
           throw BackupFailure('adjustments 第 ${index + 1} 条类型未知：$type');
         }
-        final amount = requireInt('amount_cents');
+        var amount = requireInt('amount_cents');
         if (amount <= 0) {
           throw BackupFailure('adjustments 第 ${index + 1} 条金额必须大于 0');
+        }
+        // v1/v2 备份没有工时字段，缺失即按「直接填金额」处理
+        final workMinutes = (row['work_minutes'] as num?)?.toInt() ?? 0;
+        final hourlyRate = (row['hourly_rate_cents'] as num?)?.toInt() ?? 0;
+        if (workMinutes < 0 || hourlyRate < 0) {
+          throw BackupFailure('adjustments 第 ${index + 1} 条工时/时薪为负数');
+        }
+        if (workMinutes > 0 && hourlyRate > 0) {
+          // 以工时 × 时薪为准重算，避免备份被手工改过导致两处对不上
+          final derived = Money.hourlyCents(
+            minutes: workMinutes,
+            rateCentsPerHour: hourlyRate,
+          );
+          if (derived > 0) amount = derived;
         }
         return {
           'id': requireString('id'),
@@ -337,11 +363,24 @@ class BackupService {
           'worker_name_snapshot': requireString('worker_name_snapshot'),
           'type': type,
           'amount_cents': amount,
+          'work_minutes': workMinutes,
+          'hourly_rate_cents': hourlyRate,
           'minute_of_day': (row['minute_of_day'] as num?)?.toInt() ?? 0,
           'remark': requireString('remark', allowEmpty: false),
           'deleted_at': (row['deleted_at'] as num?)?.toInt(),
           'created_at': requireInt('created_at'),
           'updated_at': requireInt('updated_at'),
+        };
+      case Tables.processPresets:
+        final name = requireString('name', allowEmpty: false).trim();
+        if (name.isEmpty) {
+          throw BackupFailure('process_presets 第 ${index + 1} 条工序名为空');
+        }
+        return {
+          'name': name,
+          'is_builtin': ((row['is_builtin'] as num?)?.toInt() ?? 0) == 0 ? 0 : 1,
+          'sort_order': (row['sort_order'] as num?)?.toInt() ?? 0,
+          'created_at': (row['created_at'] as num?)?.toInt() ?? 0,
         };
       case Tables.lockedMonths:
         final month = requireString('month');
@@ -380,6 +419,7 @@ class BackupService {
       toyCount: payload[Tables.toys]?.length ?? 0,
       recordCount: records.length,
       adjustmentCount: payload[Tables.adjustments]?.length ?? 0,
+      processCount: payload[Tables.processPresets]?.length ?? 0,
       lockedMonthCount: payload[Tables.lockedMonths]?.length ?? 0,
       minDate: minDate,
       maxDate: maxDate,
@@ -407,6 +447,11 @@ class BackupService {
         for (final row in rows) {
           await executor.insert(table, row);
         }
+      }
+      // 老备份（v2 及以前）没有工序表，恢复后列表会空掉，
+      // 这里无条件补种预置项——`INSERT OR IGNORE` 对已有数据无害。
+      for (final statement in Schema.seedProcessStatements) {
+        await executor.execute(statement);
       }
     }
 

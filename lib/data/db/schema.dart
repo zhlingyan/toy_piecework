@@ -1,6 +1,6 @@
 import '../../core/constants.dart';
 
-/// 数据库结构定义（版本 1）。
+/// 数据库结构定义（版本 3）。
 ///
 /// 索引原则：日期、工人、删除标记三条高频过滤路径全部建索引。
 /// 不启用外键约束——历史流水必须能在档案归档后继续存在，
@@ -8,7 +8,7 @@ import '../../core/constants.dart';
 class Schema {
   Schema._();
 
-  static const int version = 2;
+  static const int version = 3;
 
   static const List<String> createStatements = [
     '''
@@ -67,12 +67,24 @@ class Schema {
       worker_name_snapshot TEXT NOT NULL,
       type TEXT NOT NULL,
       amount_cents INTEGER NOT NULL,
+      work_minutes INTEGER NOT NULL DEFAULT 0,
+      hourly_rate_cents INTEGER NOT NULL DEFAULT 0,
       remark TEXT NOT NULL,
       deleted_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       CHECK (amount_cents > 0),
+      CHECK (work_minutes >= 0),
+      CHECK (hourly_rate_cents >= 0),
       CHECK (type IN ('bonus','hourly','deduction','advance'))
+    )
+    ''',
+    '''
+    CREATE TABLE ${Tables.processPresets} (
+      name TEXT PRIMARY KEY NOT NULL,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
     )
     ''',
     '''
@@ -105,7 +117,19 @@ class Schema {
     'DELETE FROM ${Tables.toys}',
     'DELETE FROM ${Tables.workers}',
     'DELETE FROM ${Tables.lockedMonths}',
+    'DELETE FROM ${Tables.processPresets}',
   ];
+
+  /// 预置常用工序。
+  ///
+  /// 用 `INSERT OR IGNORE` 而不是 `INSERT`：建库、升级、恢复三条路径都会跑它，
+  /// 重复执行必须是无害的（`name` 是主键，天然去重）。
+  static List<String> get seedProcessStatements => [
+        for (var i = 0; i < Defaults.builtinProcesses.length; i++)
+          "INSERT OR IGNORE INTO ${Tables.processPresets} "
+              '(name, is_builtin, sort_order, created_at) VALUES '
+              "('${Defaults.builtinProcesses[i].replaceAll("'", "''")}', 1, $i, 0)",
+      ];
 
   /// v1 → v2：补「精确到分钟」「加班」两组字段。
   ///
@@ -134,5 +158,34 @@ class Schema {
         "CAST(strftime('%H', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER) * 60 + "
         "CAST(strftime('%M', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER)",
     'CREATE INDEX idx_records_date_minute ON ${Tables.pieceRecords}(date, minute_of_day)',
+  ];
+
+  /// v2 → v3：计时工资（工时 × 时薪）+ 常用工序表。
+  ///
+  /// 同样是原地加列：
+  /// * 老调整项 `work_minutes = 0`、`hourly_rate_cents = 0`，即「直接填金额」，
+  ///   金额 `amount_cents` 一分不动；
+  /// * `process_presets` 新建后立刻灌入预置工序，
+  ///   再按现有玩具档案里出现过的工序补一遍——这样升级后打开选择列表，
+  ///   以前手打过的工序也都在里面，不用重新加。
+  static const List<String> migrateV2ToV3 = [
+    'ALTER TABLE ${Tables.adjustments} '
+        'ADD COLUMN work_minutes INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE ${Tables.adjustments} '
+        'ADD COLUMN hourly_rate_cents INTEGER NOT NULL DEFAULT 0',
+    '''
+    CREATE TABLE ${Tables.processPresets} (
+      name TEXT PRIMARY KEY NOT NULL,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    )
+    ''',
+    // 历史上手打过的工序全部沉淀为「自定义项」，排在预置项之后。
+    'INSERT OR IGNORE INTO ${Tables.processPresets} '
+        '(name, is_builtin, sort_order, created_at) '
+        'SELECT DISTINCT TRIM(process), 0, 1000, '
+        'CAST(strftime(\'%s\', \'now\') AS INTEGER) * 1000 '
+        'FROM ${Tables.toys} WHERE TRIM(process) <> \'\'',
   ];
 }

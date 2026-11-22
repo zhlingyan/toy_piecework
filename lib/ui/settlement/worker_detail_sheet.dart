@@ -257,7 +257,10 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                       if (_adjustments.isEmpty)
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 12),
-                          child: MutedText('本期没有补贴 / 计时 / 扣款 / 预支'),
+                          child: MutedText(
+                            '本期没有补贴 / 计时 / 扣款 / 预支。'
+                            '点右上角「录入」可以补记一笔。',
+                          ),
                         )
                       else
                         for (final adjustment in _adjustments)
@@ -382,23 +385,31 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    adjustment.remark,
+                    adjustment.summaryLabel,
                     style: theme.textTheme.bodyLarge,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                   Text(
-                    adjustment.date,
-                    style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
+                    '${adjustment.date} ${adjustment.timeLabel}',
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(color: AppTheme.muted),
                   ),
                 ],
               ),
             ),
-            Text(
-              Money.formatCentsSigned(adjustment.signedCents),
-              style: theme.textTheme.bodyLarge?.copyWith(
-                fontWeight: FontWeight.w700,
-                color: positive ? AppTheme.success : AppTheme.danger,
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(
+                  Money.formatCentsSigned(adjustment.signedCents),
+                  maxLines: 1,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: positive ? AppTheme.success : AppTheme.danger,
+                  ),
+                ),
               ),
             ),
             if (!_locked)
