@@ -7,6 +7,7 @@ import '../../data/models/piece_record.dart';
 import '../../data/models/toy.dart';
 import '../../domain/holidays/cn_holidays.dart';
 import '../../domain/rules/overtime_rules.dart';
+import '../../domain/rules/price_rules.dart';
 import '../../services/app_services.dart';
 import '../common/date_picker_sheet.dart';
 import '../common/picker.dart';
@@ -68,6 +69,13 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
   late bool _overtime;
   bool _saving = false;
 
+  /// 这一笔自己的结算状态。
+  bool _settled = false;
+
+  /// 所在月份是否整月已标记结算：是的话这一笔的开关交给"详细明细"处理，
+  /// 避免在编辑弹层里取消完还显示已结算（整月标记会把它又盖回去）。
+  bool _monthSettled = false;
+
   @override
   void initState() {
     super.initState();
@@ -79,11 +87,24 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
     _unitPrice = record.unitPriceSnapshot;
     _minuteOfDay = record.minuteOfDay;
     _overtime = record.overtime;
+    _settled = record.settledAt != null;
     _quantity = TextEditingController(text: '${record.quantity}')
       ..addListener(() => setState(() {}));
     _remark = TextEditingController(text: record.remark);
     _price = TextEditingController(text: Money.formatPrice(record.unitPriceSnapshot))
       ..addListener(() => setState(() {}));
+    _loadSettleState();
+  }
+
+  Future<void> _loadSettleState() async {
+    final months = await widget.services.settlementMarks
+        .settledMonthsFor(widget.record.workerId);
+    if (!mounted) return;
+    final marked = months.contains(Dates.ymOfYmd(widget.record.date));
+    setState(() {
+      _monthSettled = marked;
+      if (marked) _settled = true;
+    });
   }
 
   @override
@@ -99,6 +120,31 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
     final value = int.tryParse(text);
     if (value == null || value <= 0) return null;
     return value;
+  }
+
+  /// 数量输入的问题（空着不报，填错才报）。
+  String? get _quantityError {
+    final raw = Money.normalizeDigits(_quantity.text).trim();
+    if (raw.isEmpty) return null;
+    final value = int.tryParse(raw);
+    if (value == null || value <= 0) return '要填大于 0 的整数';
+    return null;
+  }
+
+  /// 本次单价输入的问题。
+  String? get _priceError {
+    final raw = _price.text.trim();
+    if (raw.isEmpty) return null;
+    return Money.tryParsePrice(raw) == null ? '最多 4 位小数' : null;
+  }
+
+  /// 这一笔用的是不是与档案不同的临时单价。
+  bool get _isTempPrice {
+    final base = _resolvedToy?.unitPriceTenThousandth ?? 0;
+    return PriceRules.isTemporary(
+      recordUnitPrice: _priceValue ?? -1,
+      baseUnitPrice: base,
+    );
   }
 
   int? get _priceValue {
@@ -174,7 +220,7 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
       title: '更换玩具 / 工序',
       items: widget.toys,
       nameOf: (item) => item.displayName,
-      subtitleOf: (item) => '单价 ${item.priceLabel} 元',
+      subtitleOf: (item) => '单价 ${item.priceLabel}',
       initialsOf: (item) => item.pinyinInitials,
       badgeOf: (item) => item.priceLabel,
     );
@@ -186,9 +232,9 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
       final ok = await showConfirmDialog(
         context,
         title: '新工序的单价不一样',
-        message: '「${picked.displayName}」的单价是 ${picked.priceLabel} 元，'
-            '原来是 ${Money.formatPrice(_unitPrice)} 元。\n\n'
-            '改用新单价后，这一笔的小计会重新计算。',
+        message: '「${picked.displayName}」的档案单价是 ${picked.priceLabel}，'
+            '这一笔原来是 ${Money.formatPrice(_unitPrice)}。\n\n'
+            '改用新单价后只会重算这一笔，档案单价不会变。',
         confirmText: '用新单价',
       );
       if (!ok) return;
@@ -207,14 +253,15 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
 
   Future<void> _save() async {
     if (_saving) return;
-    final quantity = _quantityValue;
+    // 先校验单价：改单价填错时不该弹「数量要大于 0」
     final price = _priceValue;
-    if (quantity == null) {
-      showToast(context, '数量要填大于 0 的整数', isError: true);
+    if (price == null) {
+      showToast(context, '单价最多 4 位小数（例：0.035）', isError: true);
       return;
     }
-    if (price == null) {
-      showToast(context, '单价格式不对，最多 4 位小数', isError: true);
+    final quantity = _quantityValue;
+    if (quantity == null) {
+      showToast(context, '这一笔的数量要填大于 0 的整数', isError: true);
       return;
     }
 
@@ -233,6 +280,7 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
         toyId: _toyId,
         toyNameSnapshot: _toyName,
         processSnapshot: _process,
+        settled: _monthSettled ? null : _settled,
       );
       widget.services.notifyDataChanged();
       if (!mounted) return;
@@ -266,6 +314,55 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
       if (!mounted) return;
       showToast(context, error.message, isError: true);
     }
+  }
+
+  Widget _buildSettleRow(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: _settled
+            ? AppTheme.success.withValues(alpha: 0.08)
+            : const Color(0xFFF7F8FA),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: _settled
+              ? AppTheme.success.withValues(alpha: 0.4)
+              : const Color(0xFFE6E9EF),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _settled ? Icons.check_circle : Icons.schedule,
+            color: _settled ? AppTheme.success : AppTheme.muted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _settled ? '这一笔：已结算' : '这一笔：未结算',
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                ),
+                Text(
+                  _monthSettled
+                      ? '整期已标记结算；要取消这一笔，请到「详细明细」里点它'
+                      : '只改这一笔的结算状态，不影响同期其他记录',
+                  style: const TextStyle(fontSize: 13, color: AppTheme.muted),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: _settled,
+            onChanged: _monthSettled
+                ? null
+                : (value) => setState(() => _settled = value),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -374,7 +471,7 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
                         ),
                         if (_overtime && _overtimePricing != null)
                           Text(
-                            '${_overtimePricing!.priceLabel} 元/件'
+                            '${_overtimePricing!.priceLabel}/件'
                             '（×${_overtimePricing!.multiplierLabel}）',
                             style: const TextStyle(fontSize: 13),
                           ),
@@ -398,7 +495,10 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
                     keyboardType: TextInputType.number,
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800),
-                    decoration: const InputDecoration(labelText: '数量（件）'),
+                    decoration: InputDecoration(
+                      labelText: '数量（件）',
+                      errorText: _quantityError,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -408,17 +508,41 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
-                    decoration: const InputDecoration(labelText: '单价（元）'),
+                    decoration: InputDecoration(
+                      labelText: '本次单价',
+                      helperText: '只改这一笔',
+                      helperStyle: const TextStyle(fontSize: 12),
+                      errorText: _priceError,
+                    ),
                   ),
                 ),
               ],
             ),
+            if (_isTempPrice)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    const TempPriceBadge(compact: true),
+                    Text(
+                      '档案 ${Money.formatPrice(_resolvedToy?.unitPriceTenThousandth ?? 0)}'
+                      ' · 这一笔 ${Money.formatPrice(_priceValue ?? 0)}（不改档案）',
+                      style: const TextStyle(fontSize: 13, color: AppTheme.muted),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 12),
             TextField(
               controller: _remark,
               style: const TextStyle(fontSize: 17),
               decoration: const InputDecoration(labelText: '备注'),
             ),
+            const SizedBox(height: 12),
+            _buildSettleRow(theme),
             const SizedBox(height: 14),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),

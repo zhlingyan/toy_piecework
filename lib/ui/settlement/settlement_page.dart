@@ -447,6 +447,11 @@ class _SettlementPageState extends State<SettlementPage> {
               _miniStat('扣款', Money.formatCents(result?.deductionTotal ?? 0)),
               _miniStat('预支', Money.formatCents(result?.advanceTotal ?? 0)),
               _miniStat('笔数', '${result?.recordCount ?? 0}'),
+              _miniStat(
+                '已结笔数',
+                '${result?.settledRecordCount ?? 0}/'
+                    '${result?.totalRecordCount ?? 0}',
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -477,8 +482,9 @@ class _SettlementPageState extends State<SettlementPage> {
           ),
           const SizedBox(height: 10),
           MutedText(
-            '结算状态按「人 + 月」记录。点工人行进去可以标记已结算、查看详细明细，'
-            '补贴 / 计时 / 扣款 / 预支的每一笔也能在那里查看和补录。',
+            '结算状态可以按笔记：点工人行进「详细明细」，每一笔右侧都能单独结算/取消；'
+            '也可以一次「标记本期已结算」整期勾掉。补贴 / 计时 / 扣款 / 预支的每一笔'
+            '同样在那里查看、补录与单独结算。',
           ),
         ],
       ),

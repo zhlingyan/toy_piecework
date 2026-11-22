@@ -51,6 +51,7 @@ class PieceRecordRepository {
     bool overtime = false,
     int? overtimePriceTenThousandth,
     int overtimeMultiplier = 1000,
+    bool settled = false,
     DatabaseExecutor? ex,
   }) {
     return _run(ex, (executor) async {
@@ -100,6 +101,7 @@ class PieceRecordRepository {
         overtimeMultiplier: isOvertime ? overtimeMultiplier : 1000,
         remark: remark.trim(),
         deletedAt: null,
+        settledAt: settled ? now : null,
         createdAt: now,
         updatedAt: now,
       );
@@ -137,6 +139,7 @@ class PieceRecordRepository {
     bool? overtime,
     int? overtimePriceTenThousandth,
     int? overtimeMultiplier,
+    bool? settled,
     DatabaseExecutor? ex,
   }) {
     return _run(ex, (executor) async {
@@ -197,6 +200,10 @@ class PieceRecordRepository {
             ? (overtimeMultiplier ?? current.overtimeMultiplier)
             : 1000,
         remark: (remark ?? current.remark).trim(),
+        settledAt: settled == null
+            ? current.settledAt
+            : (settled ? (current.settledAt ?? AppClock.nowMillis()) : null),
+        clearSettledAt: settled == false,
         subtotalCents: sameQuantityAndPrice
             ? current.subtotalCents
             : Money.subtotalCents(
@@ -213,6 +220,36 @@ class PieceRecordRepository {
         whereArgs: [updated.id],
       );
       return updated;
+    });
+  }
+
+  /// 单笔标记 / 取消结算。
+  ///
+  /// **不经过锁账校验**：锁账防的是"改账"，结算是记录"钱发没发"，
+  /// 两者刻意解耦——发完钱锁了账，事后补个已结算标记不该被拦住。
+  Future<void> setSettled(
+    String id, {
+    required bool settled,
+    DatabaseExecutor? ex,
+  }) {
+    return _run(ex, (executor) async {
+      final current = await findById(id, ex: executor);
+      if (current == null) {
+        throw const ValidationFailure('该记录已不存在');
+      }
+      if (current.isDeleted) {
+        throw const ValidationFailure('已删除的记录不能标记结算，请先从回收站恢复');
+      }
+      final now = AppClock.nowMillis();
+      await executor.update(
+        Tables.pieceRecords,
+        {
+          'settled_at': settled ? now : null,
+          'updated_at': now,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
     });
   }
 

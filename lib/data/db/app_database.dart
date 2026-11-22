@@ -66,6 +66,11 @@ class AppDatabase {
                 await txn.execute(statement);
               }
             }
+            if (oldVersion < 5) {
+              for (final statement in Schema.migrateV4ToV5) {
+                await txn.execute(statement);
+              }
+            }
           });
         },
       ),

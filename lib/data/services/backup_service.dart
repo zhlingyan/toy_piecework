@@ -339,6 +339,8 @@ class BackupService {
           'overtime_multiplier':
               (row['overtime_multiplier'] as num?)?.toInt() ?? 1000,
           'remark': row['remark']?.toString() ?? '',
+          // v4 及更早的备份没有单笔结算时间，缺失即"跟随整月标记"
+          'settled_at': (row['settled_at'] as num?)?.toInt(),
           'deleted_at': (row['deleted_at'] as num?)?.toInt(),
           'created_at': requireInt('created_at'),
           'updated_at': requireInt('updated_at'),
@@ -381,6 +383,7 @@ class BackupService {
           'hourly_rate_cents': hourlyRate,
           'minute_of_day': (row['minute_of_day'] as num?)?.toInt() ?? 0,
           'remark': requireString('remark', allowEmpty: false),
+          'settled_at': (row['settled_at'] as num?)?.toInt(),
           'deleted_at': (row['deleted_at'] as num?)?.toInt(),
           'created_at': requireInt('created_at'),
           'updated_at': requireInt('updated_at'),

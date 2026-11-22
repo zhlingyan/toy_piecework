@@ -4,8 +4,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:toy_piecework/core/constants.dart';
+import 'package:toy_piecework/core/dates.dart';
 import 'package:toy_piecework/data/db/app_database.dart';
 import 'package:toy_piecework/data/db/schema.dart';
+import 'package:toy_piecework/data/repositories/settlement_repository.dart';
 
 /// 数据库迁移测试（v1 / v2 → 最新版）。
 ///
@@ -525,5 +527,106 @@ void main() {
       '13800001111',
     );
     expect((await appDb.raw.query('settlement_marks')).length, 1);
+  });
+
+  test('v4 库升级到 v5：加了单笔结算列，老账仍按整月标记结算', () async {
+    final v4Path = p.join(tempDir.path, 'v4.db');
+    final v4 = await databaseFactoryFfi.openDatabase(
+      v4Path,
+      options: OpenDatabaseOptions(
+        version: 4,
+        onCreate: (db, version) async {
+          for (final statement in v1Statements) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV1ToV2) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV2ToV3) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV3ToV4) {
+            await db.execute(statement);
+          }
+        },
+      ),
+    );
+    await v4.insert('workers', {
+      'id': 'w1',
+      'code': 'W001',
+      'name': '张三',
+      'phone': '',
+      'id_card': '',
+      'pinyin_initials': 'ZS',
+      'is_archived': 0,
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    await v4.insert('piece_records', {
+      'id': 'r1',
+      'date': '2026-06-10',
+      'minute_of_day': 600,
+      'worker_id': 'w1',
+      'toy_id': 't1',
+      'worker_name_snapshot': '张三',
+      'toy_name_snapshot': '小熊',
+      'process_snapshot': '整件',
+      'unit_price_snapshot': 2000,
+      'quantity': 100,
+      'subtotal_cents': 2000,
+      'remark': '',
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    // v4 时代只有"人 + 月"标记
+    await v4.insert('settlement_marks', {
+      'worker_id': 'w1',
+      'month': '2026-06',
+      'is_settled': 1,
+      'settled_at': 2,
+      'updated_at': 2,
+    });
+    await v4.close();
+
+    final appDb = await AppDatabase.open(
+      path: v4Path,
+      factoryOverride: databaseFactoryFfi,
+    );
+    addTearDown(() async => appDb.close());
+
+    expect(await appDb.raw.getVersion(), Schema.version);
+
+    final record = (await appDb.raw.query('piece_records')).single;
+    expect(record['subtotal_cents'], 2000, reason: '升级不动金额');
+    expect(
+      record['settled_at'],
+      isNull,
+      reason: '老账没有单笔标记，应跟随整月标记而不是凭空写上时间',
+    );
+
+    // 整月标记仍然有效：升级后这个月依旧算已结算
+    final settlements = SettlementRepository(appDb);
+    final worker = (await settlements.settle(
+      DateRange.of('2026-06-01', '2026-06-30'),
+    ))
+        .workers
+        .single;
+    expect(worker.settlementStatus.label, '已结算');
+    expect(worker.settledCents, 2000);
+
+    // 新列可写：单笔标记生效后取消整月标记，这笔仍是已结算
+    await appDb.raw.update(
+      'piece_records',
+      {'settled_at': 3},
+      where: 'id = ?',
+      whereArgs: ['r1'],
+    );
+    await appDb.raw.delete('settlement_marks');
+    final after = (await settlements.settle(
+      DateRange.of('2026-06-01', '2026-06-30'),
+    ))
+        .workers
+        .single;
+    expect(after.settlementStatus.label, '已结算');
   });
 }

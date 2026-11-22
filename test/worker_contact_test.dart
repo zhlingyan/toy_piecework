@@ -81,7 +81,7 @@ void main() {
     expect(Validators.idCardWarning('11010519491231002A'), isNotNull);
   });
 
-  test('备份 v4：联系方式与结算标记都能原样恢复', () async {
+  test('备份 v5：联系方式与结算标记都能原样恢复', () async {
     final worker = await f.addWorker(
       '张三',
       phone: '13800001111',
@@ -102,7 +102,7 @@ void main() {
 
     final json = await f.backup.buildJson();
     final preview = f.backup.inspect(json);
-    expect(preview.summary.version, 4);
+    expect(preview.summary.version, 5);
     expect(preview.summary.workerCount, 1);
     expect(preview.summary.settlementCount, 1);
 
@@ -141,10 +141,10 @@ void main() {
       quantity: 100,
     );
 
-    // 手工把 v4 备份降级成 v3：删掉新字段与结算表数据
+    // 手工把 v5 备份降级成 v3：删掉新字段与结算表数据
     final json = await f.backup.buildJson();
     var text = json
-        .replaceAll('"version": 4', '"version": 3')
+        .replaceAll('"version": 5', '"version": 3')
         .replaceAll(RegExp(r'\s*"phone": "[^"]*",\n'), '\n')
         .replaceAll(RegExp(r'\s*"id_card": "[^"]*",\n'), '\n');
     expect(text.contains('"phone"'), isFalse);

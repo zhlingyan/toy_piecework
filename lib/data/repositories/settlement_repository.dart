@@ -67,6 +67,78 @@ class SettlementRepository {
     );
     final recordCount = (recordCountRows.first['c'] as int?) ?? 0;
 
+    // 逐笔结算：一笔算已结的条件是「自己标了 settled_at」**或**「所在月整月已标」。
+    // 用 LEFT JOIN 一次算完，避免把几千条流水拉到内存里再逐条判断。
+    final pieceSettledRows = await executor.rawQuery(
+      '''
+      SELECT p.worker_id,
+             SUM(CASE WHEN p.settled_at IS NOT NULL OR m.month IS NOT NULL
+                      THEN p.subtotal_cents ELSE 0 END) AS settled_cents,
+             SUM(CASE WHEN p.settled_at IS NOT NULL OR m.month IS NOT NULL
+                      THEN 1 ELSE 0 END) AS settled_cnt,
+             COUNT(*) AS cnt
+        FROM ${Tables.pieceRecords} p
+        LEFT JOIN ${Tables.settlementMarks} m
+          ON m.worker_id = p.worker_id
+         AND m.month = substr(p.date, 1, 7)
+         AND m.is_settled = 1
+       WHERE p.date >= ? AND p.date <= ? AND p.deleted_at IS NULL
+             ${workerId == null ? '' : 'AND p.worker_id = ?'}
+       GROUP BY p.worker_id
+      ''',
+      pieceArgs,
+    );
+    final adjustSettledRows = await executor.rawQuery(
+      '''
+      SELECT a.worker_id, a.type,
+             SUM(CASE WHEN a.settled_at IS NOT NULL OR m.month IS NOT NULL
+                      THEN a.amount_cents ELSE 0 END) AS settled_cents,
+             SUM(CASE WHEN a.settled_at IS NOT NULL OR m.month IS NOT NULL
+                      THEN 1 ELSE 0 END) AS settled_cnt,
+             COUNT(*) AS cnt
+        FROM ${Tables.adjustments} a
+        LEFT JOIN ${Tables.settlementMarks} m
+          ON m.worker_id = a.worker_id
+         AND m.month = substr(a.date, 1, 7)
+         AND m.is_settled = 1
+       WHERE a.date >= ? AND a.date <= ? AND a.deleted_at IS NULL
+             ${workerId == null ? '' : 'AND a.worker_id = ?'}
+       GROUP BY a.worker_id, a.type
+      ''',
+      adjustArgs,
+    );
+
+    final settledCentsByWorker = <String, int>{};
+    final settledCountByWorker = <String, int>{};
+    final entryCountByWorker = <String, int>{};
+
+    void addSettled(String id, int cents, int settledCount, int totalCount) {
+      settledCentsByWorker[id] = (settledCentsByWorker[id] ?? 0) + cents;
+      settledCountByWorker[id] = (settledCountByWorker[id] ?? 0) + settledCount;
+      entryCountByWorker[id] = (entryCountByWorker[id] ?? 0) + totalCount;
+    }
+
+    for (final row in pieceSettledRows) {
+      addSettled(
+        row['worker_id']! as String,
+        (row['settled_cents'] as int?) ?? 0,
+        (row['settled_cnt'] as int?) ?? 0,
+        (row['cnt'] as int?) ?? 0,
+      );
+    }
+    for (final row in adjustSettledRows) {
+      final type = AdjustmentType.tryFromCode(row['type']! as String);
+      if (type == null) continue;
+      // 调整项金额恒为正、方向由类型决定，已结金额要带符号累加，
+      // 否则「预支已结」会把已结总额越加越多。
+      addSettled(
+        row['worker_id']! as String,
+        type.sign * ((row['settled_cents'] as int?) ?? 0),
+        (row['settled_cnt'] as int?) ?? 0,
+        (row['cnt'] as int?) ?? 0,
+      );
+    }
+
     // 按月拆分的金额：结算状态按「人 + 月」记，金额也必须能按月对上，
     // 否则「已结算 / 未结算」只能靠估算，对账时必然扯皮。
     final pieceMonthRows = await executor.rawQuery(
@@ -202,6 +274,9 @@ class SettlementRepository {
           settledMonths: Set<String>.unmodifiable(
             settledByWorker[id] ?? const <String>{},
           ),
+          settledCents: settledCentsByWorker[id] ?? 0,
+          settledCount: settledCountByWorker[id] ?? 0,
+          recordCount: entryCountByWorker[id] ?? 0,
         ),
       );
     }

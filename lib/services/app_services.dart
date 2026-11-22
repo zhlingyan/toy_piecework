@@ -5,6 +5,7 @@ import '../data/repositories/adjustment_repository.dart';
 import '../data/repositories/month_lock_repository.dart';
 import '../data/repositories/piece_record_repository.dart';
 import '../data/repositories/process_repository.dart';
+import '../data/repositories/settlement_entry_repository.dart';
 import '../data/repositories/settlement_mark_repository.dart';
 import '../data/repositories/settlement_repository.dart';
 import '../data/repositories/toy_repository.dart';
@@ -47,6 +48,7 @@ class AppServices {
         csv = const CsvExportService(),
         payslips = const PayslipService() {
     cloud = CloudBackupService(db, backup, () => settings.lastCloudBackupAt);
+    settlementEntries = SettlementEntryRepository(db, settlementMarks);
   }
 
   final AppDatabase db;
@@ -62,6 +64,9 @@ class AppServices {
   final MonthLockRepository months;
   final SettlementRepository settlements;
   final SettlementMarkRepository settlementMarks;
+
+  /// 逐笔结算：在整月标记之上提供"这一笔已结/未结"的细粒度操作。
+  late final SettlementEntryRepository settlementEntries;
   final BackupService backup;
   final LegacyImportService legacy;
   final ReportService reports;

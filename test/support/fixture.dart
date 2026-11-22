@@ -9,6 +9,7 @@ import 'package:toy_piecework/data/repositories/adjustment_repository.dart';
 import 'package:toy_piecework/data/repositories/month_lock_repository.dart';
 import 'package:toy_piecework/data/repositories/piece_record_repository.dart';
 import 'package:toy_piecework/data/repositories/process_repository.dart';
+import 'package:toy_piecework/data/repositories/settlement_entry_repository.dart';
 import 'package:toy_piecework/data/repositories/settlement_mark_repository.dart';
 import 'package:toy_piecework/data/repositories/settlement_repository.dart';
 import 'package:toy_piecework/data/repositories/toy_repository.dart';
@@ -33,7 +34,9 @@ class Fixture {
         settlementMarks = SettlementMarkRepository(db),
         backup = BackupService(db),
         legacy = LegacyImportService(db),
-        reports = ReportService(db);
+        reports = ReportService(db) {
+    settlementEntries = SettlementEntryRepository(db, settlementMarks);
+  }
 
   static Future<Fixture> create() async {
     sqfliteFfiInit();
@@ -56,6 +59,7 @@ class Fixture {
   final MonthLockRepository months;
   final SettlementRepository settlements;
   final SettlementMarkRepository settlementMarks;
+  late final SettlementEntryRepository settlementEntries;
   final BackupService backup;
   final LegacyImportService legacy;
   final ReportService reports;

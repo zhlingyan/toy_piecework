@@ -74,6 +74,7 @@ class AdjustmentRepository {
     int workMinutes = 0,
     int hourlyRateCents = 0,
     String? adjustmentId,
+    bool settled = false,
     DatabaseExecutor? ex,
   }) {
     return _run(ex, (executor) async {
@@ -104,6 +105,7 @@ class AdjustmentRepository {
         hourlyRateCents: hourlyRateCents,
         remark: trimmedRemark,
         deletedAt: null,
+        settledAt: settled ? now : null,
         createdAt: now,
         updatedAt: now,
         minuteOfDay: minuteOfDay.clamp(0, Dates.minutesPerDay - 1),
@@ -131,6 +133,7 @@ class AdjustmentRepository {
     AdjustmentType? type,
     int? workMinutes,
     int? hourlyRateCents,
+    bool? settled,
     DatabaseExecutor? ex,
   }) {
     return _run(ex, (executor) async {
@@ -171,6 +174,10 @@ class AdjustmentRepository {
         workMinutes: newMinutes,
         hourlyRateCents: newRate,
         remark: newRemark,
+        settledAt: settled == null
+            ? current.settledAt
+            : (settled ? (current.settledAt ?? AppClock.nowMillis()) : null),
+        clearSettledAt: settled == false,
         updatedAt: AppClock.nowMillis(),
       );
       await executor.update(
@@ -180,6 +187,30 @@ class AdjustmentRepository {
         whereArgs: [updated.id],
       );
       return updated;
+    });
+  }
+
+  /// 单笔标记 / 取消结算（不经过锁账校验，理由同计件流水）。
+  Future<void> setSettled(
+    String id, {
+    required bool settled,
+    DatabaseExecutor? ex,
+  }) {
+    return _run(ex, (executor) async {
+      final current = await findById(id, ex: executor);
+      if (current == null) {
+        throw const ValidationFailure('该调整项已不存在');
+      }
+      if (current.isDeleted) {
+        throw const ValidationFailure('已删除的调整项不能标记结算');
+      }
+      final now = AppClock.nowMillis();
+      await executor.update(
+        Tables.adjustments,
+        {'settled_at': settled ? now : null, 'updated_at': now},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
     });
   }
 

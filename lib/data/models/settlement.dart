@@ -70,6 +70,9 @@ class WorkerSettlement {
     required this.pieceCents,
     this.monthNetCents = const {},
     this.settledMonths = const {},
+    this.settledCents = 0,
+    this.settledCount = 0,
+    this.recordCount = 0,
   });
 
   final String workerId;
@@ -94,6 +97,18 @@ class WorkerSettlement {
 
   /// 区间内有账、且已标记结算的月份。
   final Set<String> settledMonths;
+
+  /// 已结算金额（分）：逐笔判断「这一笔是否已结算」后累加。
+  ///
+  /// 与按月份估算的区别：整月标记 + 单笔取消的组合也能算准，
+  /// 不会出现「金额已经变了、状态还停在旧值」的对不上。
+  final int settledCents;
+
+  /// 已结算笔数（计件 + 调整项）。
+  final int settledCount;
+
+  /// 有账笔数（计件 + 调整项），用于判定「全部结清」。
+  final int recordCount;
 
   int get bonusCents => adjustmentTotals[AdjustmentType.bonus] ?? 0;
   int get hourlyCents => adjustmentTotals[AdjustmentType.hourly] ?? 0;
@@ -123,21 +138,25 @@ class WorkerSettlement {
   }
 
   /// 本区间的结算状态：全部已结 / 部分已结 / 未结算。
-  SettlementStatus get settlementStatus => SettlementRules.statusOf(
-        months: activeMonths,
-        settledMonths: settledMonths,
+  ///
+  /// 按笔数判定：只要还有一笔没结，就不算结清，
+  /// 这样「整月已标 + 后来补录了一笔」也会立刻退回「部分已结」。
+  SettlementStatus get settlementStatus => SettlementRules.statusOfCounts(
+        total: recordCount,
+        settled: settledCount,
       );
 
-  /// 已结算金额（分）。
-  int get settledCents =>
-      SettlementRules.settledCents(monthNetCents, settledMonths);
+  /// 未结算笔数。
+  int get unsettledCount => recordCount - settledCount;
 
   /// 未结算金额（分），保证「已结算 + 未结算 == 应付」。
-  int get unsettledCents =>
-      SettlementRules.unsettledCents(monthNetCents, settledMonths, netCents);
+  int get unsettledCents => SettlementRules.unsettledCentsOf(netCents, settledCents);
 
   /// 是否整个区间都已结清。
   bool get isFullySettled => settlementStatus.isFullySettled;
+
+  /// 有没有任何一笔已经结算（含整月标记带来的结算）。
+  bool get anySettled => settledCount > 0;
 }
 
 /// 一个区间的完整结算结果。
@@ -166,27 +185,38 @@ class SettlementResult {
   int get deductionTotal => workers.fold(0, (sum, w) => sum + w.deductionCents);
   int get advanceTotal => workers.fold(0, (sum, w) => sum + w.advanceCents);
 
-  /// 已结算金额（只统计全部结清的工人）。
+  /// 已结算金额（分）：逐笔累加每个人已结的那部分。
   ///
-  /// 部分已结的工人整笔计入未结算，提醒「这个人还有月份没结」，
-  /// 避免看着「已结算 800 元」就以为已经结干净了。
-  int get settledTotalCents => workers
-      .where((w) => w.isFullySettled)
-      .fold(0, (sum, w) => sum + w.netCents);
+  /// 逐笔结算之后不能再"只算结清的人"，否则「部分已结」的钱会整笔消失，
+  /// 汇总卡的已结/未结两块就对不上台账了。
+  int get settledTotalCents =>
+      workers.fold(0, (sum, w) => sum + w.settledCents);
 
-  /// 未结算金额（含部分已结的整个人）。
-  int get unsettledTotalCents => workers
-      .where((w) => !w.isFullySettled)
-      .fold(0, (sum, w) => sum + w.netCents);
+  /// 未结算金额（分）= 应付合计 - 已结算，恒等式天然成立。
+  int get unsettledTotalCents => totalNetCents - settledTotalCents;
 
   int get settledWorkerCount => workers.where((w) => w.isFullySettled).length;
 
   int get unsettledWorkerCount =>
       workers.where((w) => !w.isFullySettled).length;
 
+  /// 已结算笔数 / 总笔数：给「逐笔结算」提供进度感。
+  int get settledRecordCount =>
+      workers.fold(0, (sum, w) => sum + w.settledCount);
+
+  int get totalRecordCount =>
+      workers.fold(0, (sum, w) => sum + w.recordCount);
+
   /// 按状态筛人；`null` = 全部。
+  ///
+  /// 「未结算」筛选项要**连部分已结的人一起给**：
+  /// 逐笔结算之后，部分已结会很常见，而这些人恰恰还欠着钱；
+  /// 如果按严格相等过滤，筛选条上写着「未结算 3 人」、列表里却只剩 1 人。
   List<WorkerSettlement> filterBy(SettlementStatus? status) {
     if (status == null) return workers;
+    if (status == SettlementStatus.unsettled) {
+      return workers.where((w) => !w.isFullySettled).toList(growable: false);
+    }
     return workers
         .where((w) => w.settlementStatus == status)
         .toList(growable: false);

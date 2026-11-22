@@ -13,6 +13,8 @@ import '../../data/models/worker.dart';
 import '../../domain/holidays/cn_holidays.dart';
 import '../../domain/rules/backfill_rules.dart';
 import '../../domain/rules/overtime_rules.dart';
+import '../../domain/rules/price_rules.dart';
+import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
 import '../../state/selection_state.dart';
 import '../common/date_picker_sheet.dart';
@@ -36,6 +38,7 @@ class _CountPageState extends State<CountPage> {
   final TextEditingController _quantity = TextEditingController();
   final TextEditingController _remark = TextEditingController();
   final TextEditingController _manualPrice = TextEditingController();
+  final FocusNode _quantityFocus = FocusNode();
 
   AppServices? _services;
   List<Worker> _workers = const [];
@@ -48,6 +51,18 @@ class _CountPageState extends State<CountPage> {
   bool _loading = true;
   bool _saving = false;
   bool _manualPriceEnabled = false;
+
+  /// 玩具档案的当前单价：`toyId -> 单价`。
+  ///
+  /// 只用来判断「这一笔是不是临时调价」，**不参与计算**——
+  /// 真正入账的是流水自己的单价快照，档案怎么变都不会改历史。
+  Map<String, int> _basePrices = const {};
+
+  /// 当天所在月份里「整月已标记结算」的工人，给流水行打结算标签用。
+  Set<String> _settledWorkers = const {};
+
+  /// 录入时直接标记已结算（默认未结算）。
+  bool _settledOnEntry = false;
 
   /// 业务发生时刻（当天第几分钟）。默认取当前时间，补录可改。
   int _minuteOfDay = AppClock.nowMinuteOfDay();
@@ -80,6 +95,7 @@ class _CountPageState extends State<CountPage> {
     _quantity.dispose();
     _remark.dispose();
     _manualPrice.dispose();
+    _quantityFocus.dispose();
     super.dispose();
   }
 
@@ -133,6 +149,7 @@ class _CountPageState extends State<CountPage> {
 
     final workers = await services.workers.listActive();
     final toys = await services.toys.listActive();
+    final allToys = await services.toys.listAll();
     final records = await services.records.listByDate(date);
     final adjustments = Dates.isValidYmd(date)
         ? await services.adjustments.listRange(
@@ -142,12 +159,19 @@ class _CountPageState extends State<CountPage> {
     final locked = Dates.isValidYmd(date)
         ? await services.months.isLocked(Dates.ymOfYmd(date))
         : false;
+    final settledWorkers = Dates.isValidYmd(date)
+        ? await services.settlementMarks.settledWorkersInMonth(Dates.ymOfYmd(date))
+        : const <String>{};
     if (!mounted) return;
     setState(() {
       _workers = workers;
       _toys = toys;
+      _basePrices = {
+        for (final toy in allToys) toy.id: toy.unitPriceTenThousandth,
+      };
       _records = records;
       _adjustments = adjustments;
+      _settledWorkers = settledWorkers;
       _locked = locked;
       _loading = false;
       _syncOvertimeAuto(notify: false);
@@ -295,7 +319,7 @@ class _CountPageState extends State<CountPage> {
       title: '选择玩具与工序',
       items: _toys,
       nameOf: (item) => item.displayName,
-      subtitleOf: (item) => '单价 ${item.priceLabel} 元',
+      subtitleOf: (item) => '单价 ${item.priceLabel}',
       initialsOf: (item) => item.pinyinInitials,
       badgeOf: (item) => item.priceLabel,
       emptyHint: '没有匹配的玩具',
@@ -327,14 +351,28 @@ class _CountPageState extends State<CountPage> {
       showToast(context, '请先选择玩具与工序', isError: true);
       return;
     }
-    final quantity = _quantityValue;
-    if (quantity == null) {
-      showToast(context, '数量要填大于 0 的整数', isError: true);
-      return;
-    }
+    // 单价先校验。改单价填错时如果先弹「数量要大于 0」，
+    // 用户会以为是改单价把数量改坏了，两个字段的提示必须各归各的。
     final price = _effectivePrice;
     if (price == null) {
-      showToast(context, '单价格式不对，最多 4 位小数', isError: true);
+      showToast(
+        context,
+        '临时单价格式不对，最多 4 位小数（例：0.035）',
+        isError: true,
+      );
+      return;
+    }
+    final quantity = _quantityValue;
+    if (quantity == null) {
+      final raw = Money.normalizeDigits(_quantity.text).trim();
+      showToast(
+        context,
+        raw.isEmpty
+            ? '先在「数量」里填这一笔做了多少件（要大于 0）'
+            : '数量要填大于 0 的整数',
+        isError: true,
+      );
+      _quantityFocus.requestFocus();
       return;
     }
     final pricing = _overtimePricing;
@@ -383,11 +421,13 @@ class _CountPageState extends State<CountPage> {
         overtime: _overtime,
         overtimePriceTenThousandth: pricing?.priceTenThousandth,
         overtimeMultiplier: pricing?.multiplierPerMille ?? 1000,
+        settled: _settledOnEntry,
       );
       _pendingRecordId = null;
       if (!mounted) return;
       _quantity.clear();
       _remark.clear();
+      _settledOnEntry = false;
       if (!_manualPriceEnabled) _manualPrice.clear();
       if (!services.settings.keepWorker) widget.selection.workerId = null;
       if (!services.settings.keepToy) widget.selection.toyId = null;
@@ -555,7 +595,9 @@ class _CountPageState extends State<CountPage> {
                   label: '玩具 / 工序',
                   value: toy?.displayName,
                   hint: '点这里选玩具与工序',
-                  subtitle: toy == null ? '单价会自动带出' : '单价 ${toy.priceLabel} 元',
+                  subtitle: toy == null
+                      ? '单价会自动带出（可临时调价）'
+                      : '档案单价 ${toy.priceLabel}',
                   icon: Icons.toys_outlined,
                   onTap: _pickToy,
                   accent: const Color(0xFF7A3E00),
@@ -563,6 +605,7 @@ class _CountPageState extends State<CountPage> {
                 const SizedBox(height: 14),
                 _buildQuantityCard(theme, subtotal),
                 const SizedBox(height: 14),
+                _buildSettleRow(theme),
                 FilledButton.icon(
                   onPressed: (_saving || _locked) ? null : _save,
                   icon: _saving
@@ -727,6 +770,12 @@ class _CountPageState extends State<CountPage> {
                           color: color,
                           fontWeight: FontWeight.w700,
                         ),
+                      ),
+                      SettlementBadge(
+                        adjustment.isSettled(_settledWorkers)
+                            ? SettlementStatus.settled
+                            : SettlementStatus.unsettled,
+                        compact: true,
                       ),
                       if (_isBackfill(adjustment.date, adjustment.createdAt))
                         BackfillBadge(
@@ -928,33 +977,80 @@ class _CountPageState extends State<CountPage> {
     );
   }
 
+  /// 档案单价（没开临时调价时实际就用它）。
+  int? get _archivePrice => _toy?.unitPriceTenThousandth;
+
+  /// 现在用的是不是「与档案不同」的临时单价。
+  bool get _isTempPrice {
+    if (!_manualPriceEnabled) return false;
+    final price = _effectivePrice;
+    final base = _archivePrice;
+    if (price == null || base == null) return false;
+    return PriceRules.isTemporary(recordUnitPrice: price, baseUnitPrice: base);
+  }
+
+  /// 数量输入的问题（只在用户填了内容时提示，避免一进来就红一片）。
+  String? get _quantityError {
+    final raw = Money.normalizeDigits(_quantity.text).trim();
+    if (raw.isEmpty) return null;
+    final value = int.tryParse(raw);
+    if (value == null || value <= 0) return '要填大于 0 的整数';
+    return null;
+  }
+
+  /// 临时单价输入的问题。
+  String? get _priceError {
+    if (!_manualPriceEnabled) return null;
+    final raw = _manualPrice.text.trim();
+    if (raw.isEmpty) return null;
+    return Money.tryParsePrice(raw) == null ? '最多 4 位小数，例：0.035' : null;
+  }
+
+  /// 切换「用档案价 / 临时调价」。
+  ///
+  /// 这里改的只是**这一笔**的单价：保存时写进流水的 `unit_price_snapshot`，
+  /// 档案表一动都不动。所以回填时也必须用纯数字——
+  /// 早先回填的是带「元」的展示文本，解析必然失败，
+  /// 于是出现「改单价却提示数量要大于 0 / 单价格式不对」的怪现象。
+  void _toggleManualPrice() {
+    setState(() {
+      _manualPriceEnabled = !_manualPriceEnabled;
+      if (_manualPriceEnabled) {
+        final base = _archivePrice;
+        _manualPrice.text = base == null ? '' : Money.formatPrice(base);
+      }
+    });
+  }
+
   Widget _buildQuantityCard(ThemeData theme, int? subtotal) {
     final price = _effectivePrice;
+    final base = _archivePrice;
     return SectionCard(
-      title: '数量',
-      trailing: TextButton(
-        onPressed: () {
-          setState(() {
-            _manualPriceEnabled = !_manualPriceEnabled;
-            if (_manualPriceEnabled && _manualPrice.text.isEmpty && _toy != null) {
-              _manualPrice.text = _toy!.priceLabel;
-            }
-          });
-        },
-        child: Text(_manualPriceEnabled ? '用档案单价' : '改单价'),
+      title: '数量与单价',
+      trailing: TextButton.icon(
+        onPressed: _toggleManualPrice,
+        icon: Icon(
+          _manualPriceEnabled ? Icons.restart_alt : Icons.price_change_outlined,
+          size: 20,
+        ),
+        label: Text(_manualPriceEnabled ? '用档案价' : '临时调价'),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextField(
             controller: _quantity,
+            focusNode: _quantityFocus,
             keyboardType: TextInputType.number,
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 40, fontWeight: FontWeight.w800),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: '0',
-              hintStyle: TextStyle(fontSize: 36, color: Color(0xFFB6BDC9)),
-              contentPadding: EdgeInsets.symmetric(vertical: 10),
+              hintStyle: const TextStyle(fontSize: 36, color: Color(0xFFB6BDC9)),
+              contentPadding: const EdgeInsets.symmetric(vertical: 10),
+              errorText: _quantityError,
+              helperText: _quantityError == null ? '填这一笔做了多少件' : null,
+              helperStyle: const TextStyle(fontSize: 13, color: AppTheme.muted),
             ),
           ),
           if (_manualPriceEnabled) ...[
@@ -962,12 +1058,40 @@ class _CountPageState extends State<CountPage> {
             TextField(
               controller: _manualPrice,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(fontSize: 20),
-              decoration: const InputDecoration(
-                labelText: '本次单价（元，最多 4 位小数）',
-                helperText: '补录过去日期时，可填当时的单价',
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+              decoration: InputDecoration(
+                labelText: '本次临时单价（最多 4 位小数）',
+                errorText: _priceError,
+                helperText: _priceError == null ? '补录过去日期时可填当时的价' : null,
               ),
               onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  base == null
+                      ? '还没有选玩具工序'
+                      : '档案单价 ${Money.formatPrice(base)}'
+                          '${price == null ? '' : ' · 本次 ${Money.formatPrice(price)}'}',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: AppTheme.muted,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (_isTempPrice) const TempPriceBadge(compact: true),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // 防串库：这句话必须显眼，否则有人会以为在这里改就等于改了档案
+            const InfoBanner(
+              text: '临时调价只对这一笔生效，档案单价不会被改动。'
+                  '要永久改价，请到「设置 → 玩具工序」里改。',
+              color: TempPriceBadge.color,
+              icon: Icons.lock_outline,
             ),
           ],
           const SizedBox(height: 12),
@@ -999,7 +1123,7 @@ class _CountPageState extends State<CountPage> {
                         _overtime && _overtimePricing != null
                             ? '${_quantityValue ?? 0} 件 × ${_overtimePricing!.priceLabel}'
                                 '（加班 ×${_overtimePricing!.multiplierLabel}）'
-                            : '${_quantityValue ?? 0} × ${Money.formatPrice(price)}',
+                            : '${_quantityValue ?? 0} 件 × ${Money.formatPrice(price)}',
                         style: theme.textTheme.bodyMedium
                             ?.copyWith(color: AppTheme.muted),
                       ),
@@ -1044,6 +1168,63 @@ class _CountPageState extends State<CountPage> {
     );
   }
 
+  /// 录入时的结算状态：默认未结算，想当场结清就直接打开。
+  ///
+  /// 只写流水自己的 `settled_at`，不影响同一期的其他笔，
+  /// 也不会因为这一笔就把整月当成已结算。
+  Widget _buildSettleRow(ThemeData theme) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: _settledOnEntry
+            ? AppTheme.success.withValues(alpha: 0.08)
+            : const Color(0xFFF7F8FA),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: _settledOnEntry
+              ? AppTheme.success.withValues(alpha: 0.4)
+              : const Color(0xFFE6E9EF),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _settledOnEntry ? Icons.check_circle : Icons.schedule,
+            color: _settledOnEntry ? AppTheme.success : AppTheme.muted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _settledOnEntry ? '这一笔：已结算' : '这一笔：未结算',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: _settledOnEntry ? AppTheme.success : null,
+                  ),
+                ),
+                Text(
+                  _settledOnEntry
+                      ? '保存后直接算作已发钱，只影响这一笔'
+                      : '默认未结算，发钱后再标记（可整期也可逐笔）',
+                  style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.muted),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            // 页面里还有加班、保留工人等开关，给结算这一个稳定的定位键
+            key: const ValueKey('count-settle-switch'),
+            value: _settledOnEntry,
+            onChanged: (value) => setState(() => _settledOnEntry = value),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 加班开关：打开后单价按设置的口径换算，小计实时跟着变。
   Widget _buildOvertimeRow(ThemeData theme) {
     final settings = _services?.settings;
@@ -1062,8 +1243,8 @@ class _CountPageState extends State<CountPage> {
     } else {
       final base = _effectivePrice;
       hint = base == null
-          ? '加班单价 ${pricing.priceLabel} 元'
-          : '单价 ${Money.formatPrice(base)} → ${pricing.priceLabel} 元'
+          ? '加班单价 ${pricing.priceLabel}'
+          : '单价 ${Money.formatPrice(base)} → ${pricing.priceLabel}'
               '（×${pricing.multiplierLabel}）';
     }
 
@@ -1157,51 +1338,74 @@ class _CountPageState extends State<CountPage> {
         today: SelectionState.today,
       );
 
+  /// 单条流水：两行结构，标签区可折行，杜绝文字堆叠。
+  ///
+  /// 一行塞「时间 + 工人 + 玩具 + 单价 + 件数 + 金额 + 加班 + 补录」必然挤爆：
+  /// 大字号下 Row 里全是无约束的 Text，溢出后就会互相压住。
+  /// 现在左栏只放名称（单行截断），右栏只放数值，中间的时间与标签
+  /// 全部丢进 Wrap 自动换行——标签再多也只是往下长，不会挤占金额。
   Widget _buildRecordRow(ThemeData theme, PieceRecord record) {
+    final backfill = _isBackfill(record.date, record.createdAt);
+    final tempPrice = PriceRules.isTemporary(
+      recordUnitPrice: record.unitPriceSnapshot,
+      baseUnitPrice: _basePrices[record.toyId] ?? 0,
+    );
+    final settled = record.isSettled(_settledWorkers);
+    final name = '${record.workerNameSnapshot} · ${record.toyNameSnapshot}'
+        '${record.processSnapshot == Defaults.defaultProcess ? '' : ' / ${record.processSnapshot}'}';
+
     return InkWell(
       onTap: _locked ? null : () => _editRecord(record),
       onLongPress: _locked ? null : () => _deleteRecord(record),
       borderRadius: BorderRadius.circular(10),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Container(
+        padding: EdgeInsets.fromLTRB(backfill ? 8 : 0, 6, 0, 6),
+        decoration: backfill
+            ? BoxDecoration(
+                color: AppTheme.danger.withValues(alpha: 0.05),
+                border: const Border(
+                  left: BorderSide(color: AppTheme.danger, width: 3),
+                ),
+              )
+            : null,
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // 时间放最前面：车间里最常问的就是「几点记的这笔」
-                  Row(
+                  // 主信息：工人 + 玩具/工序，长名称截断
+                  Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: backfill ? AppTheme.danger : null,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  // 辅助与标签：时间、加班、临时调价、补录、结算状态
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       Text(
                         record.timeLabel,
                         style: theme.textTheme.bodyMedium?.copyWith(
-                          color: AppTheme.muted,
+                          color: backfill ? AppTheme.danger : AppTheme.muted,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      if (record.overtime) ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppTheme.warning.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            '加班 ×${record.overtimeMultiplierLabel}',
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: AppTheme.warning,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
+                      if (record.overtime)
+                        _miniTag(
+                          '加班 ×${record.overtimeMultiplierLabel}',
+                          AppTheme.warning,
                         ),
-                        const SizedBox(width: 8),
-                      ],
-                      if (_isBackfill(record.date, record.createdAt)) ...[
+                      if (tempPrice) const TempPriceBadge(compact: true),
+                      if (backfill)
                         BackfillBadge(
                           daysEarlier: Dates.daysBetween(
                             record.date,
@@ -1209,35 +1413,60 @@ class _CountPageState extends State<CountPage> {
                           ),
                           compact: true,
                         ),
-                        const SizedBox(width: 8),
-                      ],
-                      Expanded(
-                        child: Text(
-                          '${record.workerNameSnapshot} · ${record.toyNameSnapshot}'
-                          '${record.processSnapshot == Defaults.defaultProcess ? '' : ' / ${record.processSnapshot}'}',
-                          style: theme.textTheme.bodyLarge
-                              ?.copyWith(fontWeight: FontWeight.w600),
-                        ),
+                      SettlementBadge(
+                        settled
+                            ? SettlementStatus.settled
+                            : SettlementStatus.unsettled,
+                        compact: true,
                       ),
                     ],
                   ),
+                  if (record.remark.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      '备注：${record.remark}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: AppTheme.muted),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            // 数值区限宽 + 等比缩放：金额位数再多也不会把左边压扁
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 132),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      Money.formatCents(record.subtotalCents),
+                      maxLines: 1,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: AppTheme.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 2),
-                  Text(
-                    '${record.quantity} 件 × ${record.pricingPriceLabel}'
-                    '${record.remark.isEmpty ? '' : ' · ${record.remark}'}',
-                    style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      '${record.quantity} 件 × ${record.pricingPriceLabel}',
+                      maxLines: 1,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: AppTheme.muted),
+                    ),
                   ),
                 ],
               ),
             ),
-            Text(
-              Money.formatCents(record.subtotalCents),
-              style: theme.textTheme.titleMedium?.copyWith(
-                color: AppTheme.primary,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(width: 6),
             if (!_locked)
               IconButton(
                 tooltip: '删除',

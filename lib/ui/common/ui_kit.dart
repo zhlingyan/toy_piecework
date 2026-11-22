@@ -540,3 +540,61 @@ class SettlementBadge extends StatelessWidget {
   }
 }
 
+
+/// 「临时调价」角标：这一笔用了与档案不同的单价。
+///
+/// 紫色是刻意选的：加班是暖橙、补录是红、结算是绿/蓝/橙，
+/// 四类标签同屏出现时不能撞色，否则车间里一眼扫过去分不清哪个是哪个。
+///
+/// **只表示单价偏离了档案**，不代表档案被改过——
+/// 计数页改价只写这一笔的单价快照，档案永远只在「设置 → 玩具工序」里改。
+class TempPriceBadge extends StatelessWidget {
+  const TempPriceBadge({super.key, this.compact = false, this.detail});
+
+  final bool compact;
+
+  /// 可选补充说明，如 `档案 0.20 → 本次 0.25`。
+  final String? detail;
+
+  static const Color color = Color(0xFF6A4C93);
+
+  @override
+  Widget build(BuildContext context) {
+    final text = detail == null ? '临时调价' : '临时调价 $detail';
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 5 : 7,
+          vertical: compact ? 1 : 2,
+        ),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withValues(alpha: 0.30)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.price_change_outlined,
+              size: compact ? 11 : 13,
+              color: color,
+            ),
+            const SizedBox(width: 3),
+            Text(
+              text,
+              maxLines: 1,
+              style: TextStyle(
+                fontSize: compact ? 11 : 12,
+                color: color,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

@@ -230,7 +230,7 @@ class _ToysPageState extends State<ToysPage> {
           ],
         ),
         subtitle: Text(
-          '单价 ${toy.priceLabel} 元'
+          '单价 ${toy.priceLabel}'
           '${toy.hasOvertimePrice ? ' · 加班 ${toy.overtimePriceLabel} 元' : ''}'
           ' · 首字母 ${toy.pinyinInitials.isEmpty ? '—' : toy.pinyinInitials}',
           style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
@@ -443,7 +443,8 @@ class _ToyEditorState extends State<_ToyEditor> {
               decoration: const InputDecoration(
                 labelText: '单价（元）',
                 hintText: '如 0.035',
-                helperText: '最多 4 位小数。调价只影响以后录入，历史按原单价快照计算',
+                helperText: '最多 4 位小数。这里改的是档案默认价：只影响以后新录入，'
+                    '历史流水按原单价快照计算；计数页的「临时调价」不会写回这里',
                 suffixText: '元',
               ),
             ),

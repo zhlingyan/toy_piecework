@@ -1,6 +1,6 @@
 import '../../core/constants.dart';
 
-/// 数据库结构定义（版本 4）。
+/// 数据库结构定义（版本 5）。
 ///
 /// 索引原则：日期、工人、删除标记三条高频过滤路径全部建索引。
 /// 不启用外键约束——历史流水必须能在档案归档后继续存在，
@@ -8,7 +8,7 @@ import '../../core/constants.dart';
 class Schema {
   Schema._();
 
-  static const int version = 4;
+  static const int version = 5;
 
   static const List<String> createStatements = [
     '''
@@ -54,6 +54,7 @@ class Schema {
       overtime_price_snapshot INTEGER NOT NULL DEFAULT 0,
       overtime_multiplier INTEGER NOT NULL DEFAULT 1000,
       remark TEXT NOT NULL DEFAULT '',
+      settled_at INTEGER,
       deleted_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -72,6 +73,7 @@ class Schema {
       work_minutes INTEGER NOT NULL DEFAULT 0,
       hourly_rate_cents INTEGER NOT NULL DEFAULT 0,
       remark TEXT NOT NULL,
+      settled_at INTEGER,
       deleted_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -123,6 +125,8 @@ class Schema {
     'CREATE INDEX idx_adjustments_worker_date ON ${Tables.adjustments}(worker_id, date)',
     'CREATE INDEX idx_adjustments_deleted ON ${Tables.adjustments}(deleted_at)',
     'CREATE INDEX idx_settlement_month ON ${Tables.settlementMarks}(month)',
+    'CREATE INDEX idx_records_settled ON ${Tables.pieceRecords}(settled_at)',
+    'CREATE INDEX idx_adjustments_settled ON ${Tables.adjustments}(settled_at)',
   ];
 
   /// 恢复/导入前清空用，顺序无关（无外键）。
@@ -227,5 +231,20 @@ class Schema {
     )
     ''',
     'CREATE INDEX idx_settlement_month ON ${Tables.settlementMarks}(month)',
+  ];
+
+  /// v4 → v5：单笔结算标记。
+  ///
+  /// 每条流水 / 调整项加一列 `settled_at`：
+  /// * `NULL` = 没有单独标记，**跟随「人 + 月」的整月标记**（v1.3 的老行为）；
+  /// * 非空 = 明确标记「这一笔的钱已经发了」。
+  ///
+  /// 所以老数据不需要回填，升级后每个月的结算状态与升级前**完全一致**，
+  /// 而单笔结算只是在此之上多了一层更细的覆盖，金额一分不动。
+  static const List<String> migrateV4ToV5 = [
+    'ALTER TABLE ${Tables.pieceRecords} ADD COLUMN settled_at INTEGER',
+    'ALTER TABLE ${Tables.adjustments} ADD COLUMN settled_at INTEGER',
+    'CREATE INDEX idx_records_settled ON ${Tables.pieceRecords}(settled_at)',
+    'CREATE INDEX idx_adjustments_settled ON ${Tables.adjustments}(settled_at)',
   ];
 }

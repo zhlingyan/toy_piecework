@@ -198,5 +198,5 @@ class Defaults {
   /// 新版本能读 v1/v2/v3（缺字段按默认值补齐），老版本读 v4 会直接拒绝，
   /// 避免「静默丢字段」这种最难查的问题。
   static const String backupFormat = 'toy_piecework_backup';
-  static const int backupVersion = 4;
+  static const int backupVersion = 5;
 }

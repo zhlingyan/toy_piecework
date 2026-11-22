@@ -3,11 +3,13 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/clock.dart';
 import '../../core/constants.dart';
 import '../../core/dates.dart';
+import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/piece_record.dart';
 import '../../domain/holidays/cn_holidays.dart';
 import '../../domain/rules/backfill_rules.dart';
+import '../../domain/rules/price_rules.dart';
 import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
 import '../common/record_time_sheet.dart';
@@ -19,6 +21,12 @@ import '../theme.dart';
 /// 结算页看到的是「合并后的工序行」，对账时要的是「哪天、几点、干了什么活」。
 /// 这里按日期分组、日内按时间倒序，每条都带结算状态，方便当面和工人核对。
 ///
+/// ## 三个标签各有分工
+///
+/// * **加班 ×1.5**：这一笔按加班价算的；
+/// * **临时调价**：这一笔的单价与档案不同（档案本身没被改）；
+/// * **补录 N 天**：今天录的、账算在更早的日期（红色）。
+///
 /// ## 两个时间必须分清
 ///
 /// * **归属日期**（`date`）：这笔活算哪一天，分组、统计、结算都按它；
@@ -26,6 +34,11 @@ import '../theme.dart';
 ///
 /// 今天录了 11 号的活 → 这笔显示在 **11 号**那一组下面（不是今天），
 /// 同时打上红色「补录」角标；点这一行能看到精确到秒的录入时间。
+///
+/// ## 逐笔结算
+///
+/// 每行右侧有「结算 / 取消」小按钮：结工资时不必整期一刀切，
+/// 谁先结清就先勾谁，汇总卡会立刻跟着变。
 class WorkerRecordsPage extends StatefulWidget {
   const WorkerRecordsPage({
     super.key,
@@ -47,6 +60,7 @@ class WorkerRecordsPage extends StatefulWidget {
 /// 一条明细：计件与调整项统一成同一个展示结构。
 class _DetailEntry {
   const _DetailEntry({
+    required this.id,
     required this.date,
     required this.minuteOfDay,
     required this.createdAt,
@@ -54,11 +68,16 @@ class _DetailEntry {
     required this.subtitle,
     required this.signedCents,
     required this.settled,
+    this.settledIndividually = false,
     this.tag,
     this.remark = '',
     this.isPiece = true,
     this.overtime = false,
+    this.tempPrice = false,
   });
+
+  /// 主键：逐笔结算要拿它去更新对应那一条。
+  final String id;
 
   /// 业务日期（归属日）。
   final String date;
@@ -74,11 +93,17 @@ class _DetailEntry {
   final int signedCents;
   final bool settled;
 
+  /// 是否被**单独**标记结算（false 而 [settled] 为 true 表示跟随整月标记）。
+  final bool settledIndividually;
+
   /// 小标签：加班倍率、调整项类型。
   final String? tag;
   final String remark;
   final bool isPiece;
   final bool overtime;
+
+  /// 单价与档案不一致（临时调价）。
+  final bool tempPrice;
 
   String get month => date.substring(0, 7);
 
@@ -97,6 +122,9 @@ class _DetailEntry {
 class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
   List<_DetailEntry> _entries = const [];
   bool _loading = true;
+
+  /// 正在提交单笔结算的位置，避免连点重复提交。
+  bool _busy = false;
 
   /// null = 全部；true = 只看已结算；false = 只看未结算。
   bool? _settledFilter;
@@ -119,9 +147,15 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
     );
     final settledMonths =
         await services.settlementMarks.settledMonthsFor(widget.workerId);
+    final toys = await services.toys.listAll();
     if (!mounted) return;
     setState(() {
-      _entries = _buildEntries(records, adjustments, settledMonths);
+      _entries = _buildEntries(
+        records,
+        adjustments,
+        settledMonths,
+        {for (final toy in toys) toy.id: toy.unitPriceTenThousandth},
+      );
       _loading = false;
     });
   }
@@ -130,10 +164,12 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
     List<PieceRecord> records,
     List<Adjustment> adjustments,
     Set<String> settledMonths,
+    Map<String, int> basePrices,
   ) {
     final entries = <_DetailEntry>[
       for (final record in records)
         _DetailEntry(
+          id: record.id,
           // 分组只用 record.date；createdAt 只进审计字段
           date: record.workDate,
           minuteOfDay: record.minuteOfDay,
@@ -141,23 +177,30 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
           title: record.processSnapshot == Defaults.defaultProcess
               ? record.toyNameSnapshot
               : '${record.toyNameSnapshot} / ${record.processSnapshot}',
-          subtitle: '${record.quantity} 件 × ${record.pricingPriceLabel} 元'
+          subtitle: '${record.quantity} 件 × ${record.pricingPriceLabel}'
               '${record.remark.isEmpty ? '' : ' · ${record.remark}'}',
           signedCents: record.subtotalCents,
-          settled: settledMonths.contains(Dates.ymOfYmd(record.date)),
+          settled: record.isSettled(settledMonths),
+          settledIndividually: record.settledIndividually,
           tag: record.overtime ? '加班 ×${record.overtimeMultiplierLabel}' : null,
           remark: record.remark,
           overtime: record.overtime,
+          tempPrice: PriceRules.isTemporary(
+            recordUnitPrice: record.unitPriceSnapshot,
+            baseUnitPrice: basePrices[record.toyId] ?? 0,
+          ),
         ),
       for (final adjustment in adjustments)
         _DetailEntry(
+          id: adjustment.id,
           date: adjustment.workDate,
           minuteOfDay: adjustment.minuteOfDay,
           createdAt: adjustment.createdAt,
           title: adjustment.type.label,
           subtitle: adjustment.summaryLabel,
           signedCents: adjustment.signedCents,
-          settled: settledMonths.contains(Dates.ymOfYmd(adjustment.date)),
+          settled: adjustment.isSettled(settledMonths),
+          settledIndividually: adjustment.settledIndividually,
           remark: adjustment.remark,
           isPiece: false,
         ),
@@ -199,9 +242,61 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
 
   int get _unsettledCents => _netCents - _settledCents;
 
+  int get _settledCount => _entries.where((entry) => entry.settled).length;
+
   /// 今天补录的笔数。
   int get _backfillCount =>
       _entries.where((entry) => entry.isBackfill(_today)).length;
+
+  /// 单笔切换结算状态。
+  ///
+  /// 走 [SettlementEntryRepository]：它会在需要时把「整月标记」展开成逐笔标记，
+  /// 否则整月已结的月份里取消某一笔，刷新后又会变回已结算。
+  Future<void> _toggleSettled(_DetailEntry entry) async {
+    if (_busy) return;
+    final settle = !entry.settled;
+    if (!settle && entry.settledIndividually == false) {
+      // 由整月标记带来的已结算：取消这一笔等于把整月拆成逐笔，先说清楚
+      final ok = await showConfirmDialog(
+        context,
+        title: '取消这一笔的结算？',
+        message: '这个月整月都标记了已结算。取消这一笔会把它拆成逐笔记录，'
+            '其余各笔仍是已结算。\n金额不变，随时可以再标回来。',
+        confirmText: '取消这一笔',
+        danger: true,
+      );
+      if (!ok) return;
+    }
+    if (!mounted) return;
+    setState(() => _busy = true);
+    try {
+      final services = AppScope.read(context);
+      if (entry.isPiece) {
+        await services.settlementEntries
+            .setRecordSettled(entry.id, settled: settle);
+      } else {
+        await services.settlementEntries
+            .setAdjustmentSettled(entry.id, settled: settle);
+      }
+      services.notifyDataChanged();
+      await _load();
+      if (!mounted) return;
+      showToast(
+        context,
+        settle
+            ? '已标记这一笔为已结算（${Money.formatCentsSigned(entry.signedCents)}）'
+            : '已取消这一笔的结算标记',
+      );
+    } on AppFailure catch (error) {
+      if (!mounted) return;
+      showToast(context, error.message, isError: true);
+    } catch (error) {
+      if (!mounted) return;
+      showToast(context, '操作失败：$error', isError: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -242,14 +337,19 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
                   if (_entries.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     const MutedText(
-                      '结算状态跟随「工人 + 月份」的标记。'
-                      '在工人结算弹层里标记已结算后，这里会同步更新。',
+                      '右侧「结算 / 取消」可以逐笔改状态：整期发了就整期标，'
+                      '谁先结清就先勾谁，上面的金额会立刻跟着变。',
                       align: TextAlign.center,
                     ),
                     const SizedBox(height: 6),
                     const MutedText(
-                      '红色「补录」= 今天录入、但账算在更早的日期。'
-                      '点任意一条可以看到精确到秒的录入时间。',
+                      '红色「补录」= 今天录入、但账算在更早的日期；'
+                      '紫色「临时调价」= 这一笔的单价与档案不同（档案没被改）。',
+                      align: TextAlign.center,
+                    ),
+                    const SizedBox(height: 6),
+                    const MutedText(
+                      '点任意一条（不要点右侧按钮）可以看精确到秒的录入时间。',
                       align: TextAlign.center,
                     ),
                   ],
@@ -365,6 +465,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
                   unsettled,
                   AppTheme.warning,
                   Icons.schedule,
+                  count: _entries.length - _settledCount,
                 ),
               ),
               const SizedBox(width: 10),
@@ -374,6 +475,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
                   settled,
                   AppTheme.success,
                   Icons.check_circle_outline,
+                  count: _settledCount,
                 ),
               ),
             ],
@@ -406,7 +508,13 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
     );
   }
 
-  Widget _statusBox(String label, int cents, Color color, IconData icon) {
+  Widget _statusBox(
+    String label,
+    int cents,
+    Color color,
+    IconData icon, {
+    required int count,
+  }) {
     return Builder(
       builder: (context) {
         final theme = Theme.of(context);
@@ -429,6 +537,16 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: color,
                       fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(
+                      '$count 笔',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: AppTheme.muted),
                     ),
                   ),
                 ],
@@ -502,8 +620,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
             ),
           ),
           if (holiday != null) HolidayBadge(holiday, compact: true),
-          if (backfillCount > 0)
-            BackfillBadge(compact: true),
+          if (backfillCount > 0) const BackfillBadge(compact: true),
         ],
       ),
       trailing: Text(
@@ -534,7 +651,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          width: 54,
+          width: 50,
           child: Text(
             entry.timeLabel,
             style: theme.textTheme.bodyMedium?.copyWith(
@@ -569,6 +686,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
                         ),
                       ),
                     ),
+                  if (entry.tempPrice) const TempPriceBadge(compact: true),
                   if (backfill)
                     BackfillBadge(
                       daysEarlier: entry.daysEarlier(today),
@@ -614,19 +732,28 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
             ],
           ),
         ),
-        const SizedBox(width: 6),
-        Flexible(
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerRight,
-            child: Text(
-              Money.formatCentsSigned(entry.signedCents),
-              maxLines: 1,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: amountColor,
-                fontWeight: FontWeight.w700,
+        const SizedBox(width: 4),
+        // 右侧：金额 + 逐笔结算按钮。限宽 + 缩放，金额位数多也不会挤掉左边的文字
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 116),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(
+                  Money.formatCentsSigned(entry.signedCents),
+                  maxLines: 1,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: amountColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
-            ),
+              const SizedBox(height: 2),
+              _buildSettleButton(entry),
+            ],
           ),
         ),
       ],
@@ -658,6 +785,37 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
                 )
               : null,
           child: row,
+        ),
+      ),
+    );
+  }
+
+  /// 单笔结算按钮：未结算显示「结算」，已结算显示「取消」。
+  Widget _buildSettleButton(_DetailEntry entry) {
+    final color = entry.settled ? AppTheme.muted : AppTheme.success;
+    return InkWell(
+      onTap: _busy ? null : () => _toggleSettled(entry),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              entry.settled ? Icons.undo : Icons.check_circle_outline,
+              size: 14,
+              color: color,
+            ),
+            const SizedBox(width: 3),
+            Text(
+              entry.settled ? '取消' : '结算',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+          ],
         ),
       ),
     );

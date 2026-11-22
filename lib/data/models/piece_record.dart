@@ -23,6 +23,7 @@ class PieceRecord {
     this.overtime = false,
     this.overtimePriceSnapshot = 0,
     this.overtimeMultiplier = 1000,
+    this.settledAt,
   });
 
   factory PieceRecord.fromMap(Map<String, Object?> map) {
@@ -45,6 +46,7 @@ class PieceRecord {
       overtime: ((map['overtime'] as int?) ?? 0) != 0,
       overtimePriceSnapshot: (map['overtime_price_snapshot'] as int?) ?? 0,
       overtimeMultiplier: (map['overtime_multiplier'] as int?) ?? 1000,
+      settledAt: map['settled_at'] as int?,
     );
   }
 
@@ -94,6 +96,31 @@ class PieceRecord {
 
   final int createdAt;
   final int updatedAt;
+
+  /// 单笔结算时间（毫秒）。`null` = 没有单独标记。
+  ///
+  /// 三态语义（与调整项完全一致）：
+  /// * `null`：跟随「人 + 月」的整月标记（老版本行为，升级后一字不变）；
+  /// * 非空：这一笔明确已结算，即使整月没标也算已结。
+  ///
+  /// 反过来的「整月已结、这一笔未结」由单笔取消时的"展开"动作实现：
+  /// 取消某一笔会把整月标记展开成逐笔标记，再把这笔置空，
+  /// 这样不需要第三态，也不会出现「取消了却还显示已结算」。
+  final int? settledAt;
+
+  /// 这一笔是否被单独标记为已结算。
+  bool get settledIndividually => settledAt != null;
+
+  /// 单独标记的结算时间，`YYYY-MM-DD HH:mm:ss`；未标记为 null。
+  String? get settledAtLabel =>
+      settledAt == null ? null : Dates.formatMillis(settledAt!);
+
+  /// 综合整月标记判断这一笔是否已结算。
+  ///
+  /// 整月标记是"这一期都发完了"的粗粒度快捷方式，单笔标记是更细的覆盖，
+  /// 两者取并集：任一成立即已结算。
+  bool isSettled(Set<String> settledMonths) =>
+      settledAt != null || settledMonths.contains(Dates.ymOfYmd(date));
 
   bool get isDeleted => deletedAt != null;
 
@@ -148,6 +175,8 @@ class PieceRecord {
     String? remark,
     int? deletedAt,
     bool clearDeletedAt = false,
+    int? settledAt,
+    bool clearSettledAt = false,
     int? updatedAt,
   }) {
     return PieceRecord(
@@ -167,6 +196,7 @@ class PieceRecord {
       overtimeMultiplier: overtimeMultiplier ?? this.overtimeMultiplier,
       remark: remark ?? this.remark,
       deletedAt: clearDeletedAt ? null : (deletedAt ?? this.deletedAt),
+      settledAt: clearSettledAt ? null : (settledAt ?? this.settledAt),
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -188,6 +218,7 @@ class PieceRecord {
         'overtime_price_snapshot': overtimePriceSnapshot,
         'overtime_multiplier': overtimeMultiplier,
         'remark': remark,
+        'settled_at': settledAt,
         'deleted_at': deletedAt,
         'created_at': createdAt,
         'updated_at': updatedAt,

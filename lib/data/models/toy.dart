@@ -53,12 +53,18 @@ class Toy {
   String get displayName =>
       process == Defaults.defaultProcess ? name : '$name / $process';
 
-  String get priceLabel => '${Money.formatPrice(unitPriceTenThousandth)} 元';
+  /// 单价文本，**不带单位**。
+  ///
+  /// 单位由界面按语境单独给出（如「单价 0.20」/「小计 12.00 元」）。
+  /// 早先这里自带「 元」，既会和调用处拼成「0.20 元 元」，
+  /// 又会被直接灌进数字输入框导致解析失败（「本次单价」那个坑），
+  /// 所以统一成纯数字，由展示层决定要不要加单位。
+  String get priceLabel => Money.formatPrice(unitPriceTenThousandth);
 
   bool get hasOvertimePrice => overtimePriceTenThousandth > 0;
 
   String get overtimePriceLabel =>
-      '${Money.formatPrice(overtimePriceTenThousandth)} 元';
+      Money.formatPrice(overtimePriceTenThousandth);
 
   Toy copyWith({
     String? name,

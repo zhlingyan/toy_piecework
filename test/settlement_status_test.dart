@@ -98,9 +98,14 @@ void main() {
       settlement.netCents,
       reason: '已结 + 未结必须等于应付',
     );
-    // 部分已结的工人整笔算未结，避免误以为已经结清
-    expect(result.settledTotalCents, 0);
-    expect(result.unsettledTotalCents, 13500);
+    // 逐笔结算后，汇总按「实际已发的钱」算，不再把部分已结的人整笔归到未结
+    expect(result.settledTotalCents, 12000);
+    expect(result.unsettledTotalCents, 1500);
+    expect(
+      result.settledTotalCents + result.unsettledTotalCents,
+      result.totalNetCents,
+      reason: '汇总的已结 + 未结也必须等于应付合计',
+    );
   });
 
   test('两个月都标记：已结清；只看单月区间也显示已结算', () async {

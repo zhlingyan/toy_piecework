@@ -18,6 +18,7 @@ class Adjustment {
     this.minuteOfDay = 0,
     this.workMinutes = 0,
     this.hourlyRateCents = 0,
+    this.settledAt,
   });
 
   factory Adjustment.fromMap(Map<String, Object?> map) {
@@ -35,6 +36,7 @@ class Adjustment {
       minuteOfDay: (map['minute_of_day'] as int?) ?? 0,
       workMinutes: (map['work_minutes'] as int?) ?? 0,
       hourlyRateCents: (map['hourly_rate_cents'] as int?) ?? 0,
+      settledAt: map['settled_at'] as int?,
     );
   }
 
@@ -64,6 +66,21 @@ class Adjustment {
 
   /// 计时工资的时薪（分/小时）。0 表示未按工时算。
   final int hourlyRateCents;
+
+  /// 单笔结算时间（毫秒），语义与 `PieceRecord.settledAt` 完全一致：
+  /// `null` = 跟随整月标记；非空 = 这一笔已单独结算。
+  final int? settledAt;
+
+  /// 这一笔是否被单独标记为已结算。
+  bool get settledIndividually => settledAt != null;
+
+  /// 单独标记的结算时间，`YYYY-MM-DD HH:mm:ss`；未标记为 null。
+  String? get settledAtLabel =>
+      settledAt == null ? null : Dates.formatMillis(settledAt!);
+
+  /// 综合整月标记判断这一笔是否已结算。
+  bool isSettled(Set<String> settledMonths) =>
+      settledAt != null || settledMonths.contains(Dates.ymOfYmd(date));
 
   /// 是否按「工时 × 时薪」计价（而不是直接填一个金额）。
   bool get isByWorkTime => workMinutes > 0 && hourlyRateCents > 0;
@@ -119,6 +136,8 @@ class Adjustment {
     String? remark,
     int? deletedAt,
     bool clearDeletedAt = false,
+    int? settledAt,
+    bool clearSettledAt = false,
     int? updatedAt,
   }) {
     return Adjustment(
@@ -133,6 +152,7 @@ class Adjustment {
       amountCents: amountCents ?? this.amountCents,
       remark: remark ?? this.remark,
       deletedAt: clearDeletedAt ? null : (deletedAt ?? this.deletedAt),
+      settledAt: clearSettledAt ? null : (settledAt ?? this.settledAt),
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -148,6 +168,7 @@ class Adjustment {
         'work_minutes': workMinutes,
         'hourly_rate_cents': hourlyRateCents,
         'remark': remark,
+        'settled_at': settledAt,
         'deleted_at': deletedAt,
         'created_at': createdAt,
         'minute_of_day': minuteOfDay,

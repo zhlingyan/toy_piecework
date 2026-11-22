@@ -9,6 +9,7 @@ import '../../data/models/adjustment.dart';
 import '../../data/models/settlement.dart';
 import '../../data/models/worker.dart';
 import '../../domain/rules/backfill_rules.dart';
+import '../../domain/rules/price_rules.dart';
 import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
 import '../common/export_sheet.dart';
@@ -56,7 +57,15 @@ class _WorkerDetailSheet extends StatefulWidget {
 
 class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
   List<Adjustment> _adjustments = const [];
-  Set<String> _settledMonths = const {};
+
+  /// 弹层打开后本地刷新的一份结算结果。
+  ///
+  /// 不能在整段生命周期里只用外面传进来的快照：标记结算、补录调整项之后，
+  /// 状态和金额都会变，用旧快照会出现「按钮点了但金额没动」。
+  late WorkerSettlement _worker = widget.worker;
+
+  /// 玩具档案的当前单价：用来判断某行是不是「临时调价」。
+  Map<String, int> _basePrices = const {};
   bool _loading = true;
   bool _locked = false;
   bool _buildingPayslip = false;
@@ -74,12 +83,17 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
       workerId: widget.worker.workerId,
     );
     final lockedMonths = await widget.services.months.lockedMonths();
-    final settledMonths = await widget.services.settlementMarks
-        .settledMonthsFor(widget.worker.workerId);
+    final fresh = await widget.services.settlements.settle(
+      widget.range,
+      workerId: widget.worker.workerId,
+    );
+    final toys = await widget.services.toys.listAll();
     if (!mounted) return;
     setState(() {
       _adjustments = adjustments;
-      _settledMonths = settledMonths;
+      // 该人本期可能一笔都没有（比如刚被删空），此时保留外部快照
+      _worker = fresh.workers.isEmpty ? widget.worker : fresh.workers.first;
+      _basePrices = {for (final toy in toys) toy.id: toy.unitPriceTenThousandth};
       _locked = widget.range.months.any(lockedMonths.contains);
       _loading = false;
     });
@@ -91,17 +105,14 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
   /// 标记时就得把 7 月一起标上，否则关掉再打开会突然变成「部分已结」。
   List<String> get _activeMonths {
     final months = <String>{
-      ...widget.worker.monthNetCents.keys,
+      ..._worker.monthNetCents.keys,
       for (final adjustment in _adjustments) Dates.ymOfYmd(adjustment.date),
     }.toList();
     months.sort();
     return months;
   }
 
-  SettlementStatus get _status => SettlementRules.statusOf(
-        months: _activeMonths,
-        settledMonths: _settledMonths,
-      );
+  SettlementStatus get _status => _worker.settlementStatus;
 
   /// 标记 / 取消标记本区间已结算。
   ///
@@ -123,19 +134,22 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
       title: settle ? '标记 $prettyMonths 已结算？' : '取消已结算标记？',
       message: settle
           ? '只做状态标记，不改金额、不影响计件与调整项。\n'
-              '本期应付 ${Money.formatCents(widget.worker.netCents)} 元，'
-              '其中未结 ${Money.formatCents(widget.worker.unsettledCents)} 元。\n'
-              '标记后会归入「已结算」，方便和还没发钱的工人区分开。'
-          : '取消后 $prettyMonths 会重新算作「未结算」。金额不变，随时可以再标记回来。',
+              '本期应付 ${Money.formatCents(_worker.netCents)} 元，'
+              '其中未结 ${Money.formatCents(_worker.unsettledCents)} 元。\n'
+              '标记后会归入「已结算」，方便和还没发钱的工人区分开；'
+              '只想结其中几笔，请去「详细明细」逐笔标。'
+          : '取消后 $prettyMonths 会重新算作「未结算」（含已单独标记的笔数）。'
+              '金额不变，随时可以再标记回来。',
       confirmText: settle ? '标记已结算' : '取消标记',
       danger: !settle,
     );
     if (!ok) return;
     setState(() => _marking = true);
     try {
-      await widget.services.settlementMarks.markSettled(
+      await widget.services.settlementEntries.markRange(
         workerId: widget.worker.workerId,
         months: months,
+        range: widget.range,
         settled: settle,
       );
       widget.services.notifyDataChanged();
@@ -252,7 +266,7 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final worker = widget.worker;
+    final worker = _worker;
     final net = worker.netCents;
     return SizedBox(
       height: MediaQuery.of(context).size.height * 0.86,
@@ -373,7 +387,7 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                       const SizedBox(height: 6),
                       MutedText(
                         '「详细明细」按当前区间逐条列出每一笔：哪天、什么工序、多少件、'
-                        '多少钱、是否已结算。',
+                        '多少钱、是否已结算。想只结其中几笔，就在明细里逐笔点结算。',
                       ),
                       const SizedBox(height: 14),
                       Text('计件明细', style: theme.textTheme.titleMedium),
@@ -486,9 +500,23 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                     ),
                   ],
                 ),
-                Text(
-                  '${group.quantity} 件 × ${Money.formatPrice(group.pricingPriceTenThousandth)} 元',
-                  style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 3,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      '${group.quantity} 件 × '
+                      '${Money.formatPrice(group.pricingPriceTenThousandth)}',
+                      style:
+                          theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
+                    ),
+                    if (PriceRules.isTemporary(
+                      recordUnitPrice: group.unitPriceTenThousandth,
+                      baseUnitPrice: _basePrices[group.toyId] ?? 0,
+                    ))
+                      const TempPriceBadge(compact: true),
+                  ],
                 ),
               ],
             ),
@@ -560,6 +588,12 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                           ),
                           compact: true,
                         ),
+                      SettlementBadge(
+                        adjustment.isSettled(_worker.settledMonths)
+                            ? SettlementStatus.settled
+                            : SettlementStatus.unsettled,
+                        compact: true,
+                      ),
                     ],
                   ),
                 ],
@@ -592,11 +626,8 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
   }
 
   Widget _buildFormulaCard(ThemeData theme, WorkerSettlement worker) {
-    final settled = SettlementRules.settledCents(
-      worker.monthNetCents,
-      _settledMonths,
-    );
-    final unsettled = worker.netCents - settled;
+    final settled = worker.settledCents;
+    final unsettled = worker.unsettledCents;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -622,12 +653,12 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
           ),
           KeyValueRow(
             label: '已结算',
-            value: Money.formatCents(settled),
+            value: '${Money.formatCents(settled)}（${worker.settledCount} 笔）',
             valueColor: AppTheme.success,
           ),
           KeyValueRow(
             label: '未结算',
-            value: Money.formatCents(unsettled),
+            value: '${Money.formatCents(unsettled)}（${worker.unsettledCount} 笔）',
             valueColor: unsettled == 0 ? AppTheme.muted : AppTheme.warning,
           ),
           if (worker.isNegative)

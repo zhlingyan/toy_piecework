@@ -146,6 +146,22 @@ class SettlementMarkRepository {
     });
   }
 
+  /// 某月已标记结算的工人 id 集合（计数页给流水行打结算标签用）。
+  Future<Set<String>> settledWorkersInMonth(
+    String month, {
+    DatabaseExecutor? ex,
+  }) async {
+    if (!Dates.isValidYm(month)) return const {};
+    final executor = ex ?? _db.raw;
+    final rows = await executor.query(
+      Tables.settlementMarks,
+      columns: ['worker_id'],
+      where: 'month = ? AND is_settled = 1',
+      whereArgs: [month],
+    );
+    return rows.map((row) => row['worker_id']! as String).toSet();
+  }
+
   /// 批量标记多个工人（结算页全选时用），一个事务内完成。
   Future<void> markMany({
     required Iterable<String> workerIds,
