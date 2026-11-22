@@ -1,0 +1,152 @@
+/// 日期工具：数据库内统一用 `YYYY-MM-DD` 文本存储，便于字符串比较与索引。
+class Dates {
+  Dates._();
+
+  static String ymd(DateTime date) {
+    final y = date.year.toString().padLeft(4, '0');
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  static String ym(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}';
+
+  static DateTime dateOnly(DateTime date) =>
+      DateTime(date.year, date.month, date.day);
+
+  /// 严格校验 `YYYY-MM-DD`，并拒绝 2026-02-30 这类不存在的日期。
+  static DateTime? tryParseYmd(String value) {
+    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) return null;
+    final y = int.parse(value.substring(0, 4));
+    final m = int.parse(value.substring(5, 7));
+    final d = int.parse(value.substring(8, 10));
+    if (m < 1 || m > 12) return null;
+    if (d < 1 || d > daysInMonth(y, m)) return null;
+    return DateTime(y, m, d);
+  }
+
+  static bool isValidYmd(String value) => tryParseYmd(value) != null;
+
+  /// 严格校验 `YYYY-MM`。
+  static bool isValidYm(String value) {
+    if (!RegExp(r'^\d{4}-\d{2}$').hasMatch(value)) return false;
+    final m = int.parse(value.substring(5, 7));
+    return m >= 1 && m <= 12;
+  }
+
+  static int daysInMonth(int year, int month) =>
+      DateTime(year, month + 1, 0).day;
+
+  /// 从 `YYYY-MM-DD` 取出 `YYYY-MM`。
+  static String ymOfYmd(String ymd) => ymd.substring(0, 7);
+
+  /// 取某月最后一天的 `YYYY-MM-DD`。
+  static String lastDayOfYm(String ym) {
+    final y = int.parse(ym.substring(0, 4));
+    final m = int.parse(ym.substring(5, 7));
+    return ymd(DateTime(y, m, daysInMonth(y, m)));
+  }
+
+  static String firstDayOfYm(String ym) => '$ym-01';
+
+  /// 前后平移若干天（跨月、跨年、闰年均由 DateTime 处理）。
+  static String addDays(String ymdValue, int days) {
+    final d = tryParseYmd(ymdValue);
+    if (d == null) throw ArgumentError('非法日期: $ymdValue');
+    return ymd(DateTime(d.year, d.month, d.day + days));
+  }
+
+  /// 判断两个月份是否相邻或相同（用于结算页快捷区间提示，无则返回 false）。
+  static int compareYmd(String a, String b) => a.compareTo(b);
+}
+
+/// 结算/查询区间，起止均为**闭区间**（含边界）。
+class DateRange implements Comparable<DateRange> {
+  const DateRange({required this.start, required this.end});
+
+  /// 起止日期，格式 `YYYY-MM-DD`。
+  final String start;
+  final String end;
+
+  factory DateRange.of(String start, String end) {
+    if (!Dates.isValidYmd(start) || !Dates.isValidYmd(end)) {
+      throw ArgumentError('日期格式错误: $start ~ $end');
+    }
+    if (start.compareTo(end) > 0) {
+      throw ArgumentError('开始日期不能晚于结束日期');
+    }
+    return DateRange(start: start, end: end);
+  }
+
+  factory DateRange.day(DateTime now) {
+    final d = Dates.ymd(now);
+    return DateRange(start: d, end: d);
+  }
+
+  /// 近 7 天，含当天。
+  factory DateRange.last7Days(DateTime now) {
+    final today = Dates.dateOnly(now);
+    final begin = DateTime(today.year, today.month, today.day - 6);
+    return DateRange(start: Dates.ymd(begin), end: Dates.ymd(today));
+  }
+
+  factory DateRange.thisMonth(DateTime now) {
+    final ym = Dates.ym(now);
+    return DateRange(start: Dates.firstDayOfYm(ym), end: Dates.lastDayOfYm(ym));
+  }
+
+  factory DateRange.lastMonth(DateTime now) {
+    final firstOfThis = DateTime(now.year, now.month, 1);
+    final lastMonth = DateTime(firstOfThis.year, firstOfThis.month - 1, 1);
+    final ym = Dates.ym(lastMonth);
+    return DateRange(start: Dates.firstDayOfYm(ym), end: Dates.lastDayOfYm(ym));
+  }
+
+  factory DateRange.month(String ym) {
+    if (!Dates.isValidYm(ym)) throw ArgumentError('月份格式错误: $ym');
+    return DateRange(start: Dates.firstDayOfYm(ym), end: Dates.lastDayOfYm(ym));
+  }
+
+  bool contains(String ymd) => ymd.compareTo(start) >= 0 && ymd.compareTo(end) <= 0;
+
+  /// 区间覆盖的月份列表，锁账校验需要。
+  List<String> get months {
+    final result = <String>[];
+    var cursor = DateTime.parse(start);
+    final last = DateTime.parse(end);
+    while (!cursor.isAfter(last)) {
+      final key = Dates.ym(cursor);
+      if (result.isEmpty || result.last != key) result.add(key);
+      cursor = DateTime(cursor.year, cursor.month + 1, 1);
+    }
+    return result;
+  }
+
+  int get dayCount =>
+      DateTime.parse(end).difference(DateTime.parse(start)).inDays + 1;
+
+  Iterable<String> get days sync* {
+    var cursor = DateTime.parse(start);
+    final last = DateTime.parse(end);
+    while (!cursor.isAfter(last)) {
+      yield Dates.ymd(cursor);
+      cursor = DateTime(cursor.year, cursor.month, cursor.day + 1);
+    }
+  }
+
+  String get label => start == end ? start : '$start ~ $end';
+
+  @override
+  int compareTo(DateRange other) => start.compareTo(other.start);
+
+  @override
+  bool operator ==(Object other) =>
+      other is DateRange && other.start == start && other.end == end;
+
+  @override
+  int get hashCode => Object.hash(start, end);
+
+  @override
+  String toString() => 'DateRange($start ~ $end)';
+}
