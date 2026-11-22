@@ -1,9 +1,11 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/dates.dart';
 import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/piece_record.dart';
 import '../../data/models/toy.dart';
+import '../../domain/rules/overtime_rules.dart';
 import '../../services/app_services.dart';
 import '../common/picker.dart';
 import '../common/ui_kit.dart';
@@ -60,6 +62,8 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
   late String _toyName;
   late String _process;
   late int _unitPrice;
+  late int _minuteOfDay;
+  late bool _overtime;
   bool _saving = false;
 
   @override
@@ -71,6 +75,8 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
     _toyName = record.toyNameSnapshot;
     _process = record.processSnapshot;
     _unitPrice = record.unitPriceSnapshot;
+    _minuteOfDay = record.minuteOfDay;
+    _overtime = record.overtime;
     _quantity = TextEditingController(text: '${record.quantity}')
       ..addListener(() => setState(() {}));
     _remark = TextEditingController(text: record.remark);
@@ -99,9 +105,41 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
     return value;
   }
 
+  /// 加班时按设置口径换算后的价格；不加班返回 null。
+  OvertimePricing? get _overtimePricing {
+    final base = _priceValue;
+    if (!_overtime || base == null) return null;
+    final toy = _resolvedToy;
+    final settings = widget.services.settings;
+    if (toy != null) {
+      return OvertimeRules.resolve(
+        toy: toy,
+        basePriceTenThousandth: base,
+        mode: settings.overtimeMode,
+        multiplierPerMille: settings.overtimeMultiplierPerMille,
+      );
+    }
+    // 档案已被删/归档时没有 Toy 对象，退化为纯倍率计算
+    final multiplier = settings.overtimeMultiplierPerMille;
+    return OvertimePricing(
+      priceTenThousandth: Money.applyMultiplier(base, multiplier),
+      multiplierPerMille: multiplier,
+    );
+  }
+
+  Toy? get _resolvedToy {
+    for (final toy in widget.toys) {
+      if (toy.id == _toyId) return toy;
+    }
+    return null;
+  }
+
+  int? get _pricingPrice =>
+      _overtime ? _overtimePricing?.priceTenThousandth : _priceValue;
+
   int? get _subtotal {
     final quantity = _quantityValue;
-    final price = _priceValue;
+    final price = _pricingPrice;
     if (quantity == null || price == null) return null;
     return Money.subtotalCents(quantity: quantity, priceTenThousandth: price);
   }
@@ -109,6 +147,19 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
   Future<void> _pickDate() async {
     final picked = await pickRecordDate(context, initial: _date);
     if (picked != null) setState(() => _date = picked);
+  }
+
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(
+        hour: _minuteOfDay ~/ 60,
+        minute: _minuteOfDay % 60,
+      ),
+      helpText: '这笔活是几点做完的？',
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _minuteOfDay = picked.hour * 60 + picked.minute);
   }
 
   Future<void> _changeToy() async {
@@ -173,6 +224,10 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
         quantity: quantity,
         remark: _remark.text,
         unitPriceTenThousandth: price,
+        minuteOfDay: _minuteOfDay,
+        overtime: _overtime,
+        overtimePriceTenThousandth: _overtimePricing?.priceTenThousandth,
+        overtimeMultiplier: _overtimePricing?.multiplierPerMille,
         toyId: _toyId,
         toyNameSnapshot: _toyName,
         processSnapshot: _process,
@@ -249,15 +304,77 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
                     ),
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickDate,
+                    icon: const Icon(Icons.event_outlined),
+                    label: Text(_date, overflow: TextOverflow.ellipsis),
+                  ),
+                ),
                 const SizedBox(width: 10),
-                OutlinedButton.icon(
-                  onPressed: _pickDate,
-                  icon: const Icon(Icons.event_outlined),
-                  label: Text(_date),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickTime,
+                    icon: const Icon(Icons.schedule_outlined),
+                    label: Text(Dates.hhmm(_minuteOfDay)),
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 10),
+            Container(
+              decoration: BoxDecoration(
+                color: _overtime
+                    ? AppTheme.warning.withValues(alpha: 0.08)
+                    : const Color(0xFFF7F8FA),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: _overtime
+                      ? AppTheme.warning.withValues(alpha: 0.4)
+                      : const Color(0xFFE6E9EF),
+                ),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    _overtime ? Icons.nightlight_round : Icons.wb_sunny_outlined,
+                    color: _overtime ? AppTheme.warning : AppTheme.muted,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _overtime ? '加班' : '正常班',
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (_overtime && _overtimePricing != null)
+                          Text(
+                            '${_overtimePricing!.priceLabel} 元/件'
+                            '（×${_overtimePricing!.multiplierLabel}）',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: _overtime,
+                    onChanged: (value) => setState(() => _overtime = value),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

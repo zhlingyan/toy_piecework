@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/clock.dart';
 import '../../core/constants.dart';
 import '../../core/dates.dart';
 import '../../core/failures.dart';
@@ -8,6 +9,7 @@ import '../../core/money.dart';
 import '../../data/models/piece_record.dart';
 import '../../data/models/toy.dart';
 import '../../data/models/worker.dart';
+import '../../domain/rules/overtime_rules.dart';
 import '../../services/app_services.dart';
 import '../../state/selection_state.dart';
 import '../common/picker.dart';
@@ -39,6 +41,16 @@ class _CountPageState extends State<CountPage> {
   bool _loading = true;
   bool _saving = false;
   bool _manualPriceEnabled = false;
+
+  /// 业务发生时刻（当天第几分钟）。默认取当前时间，补录可改。
+  int _minuteOfDay = AppClock.nowMinuteOfDay();
+
+  /// 是否加班。
+  bool _overtime = false;
+
+  /// 用户手动动过加班开关后，就不再让「超时自动预勾」覆盖他的选择。
+  bool _overtimeManual = false;
+
   int _loadedVersion = -1;
   String _loadedDate = '';
 
@@ -105,6 +117,53 @@ class _CountPageState extends State<CountPage> {
       _records = records;
       _locked = locked;
       _loading = false;
+      _syncOvertimeAuto(notify: false);
+    });
+  }
+
+  /// 按「是否晚于下班时间」自动预勾加班。
+  ///
+  /// 只是初始值：用户一旦手动动过开关（[_overtimeManual]），
+  /// 就再也不覆盖他的选择——晚上补录白天干的活不该被硬判成加班。
+  void _syncOvertimeAuto({bool notify = true}) {
+    final settings = _services?.settings;
+    if (settings == null || _overtimeManual) return;
+    final auto = OvertimeRules.shouldPrecheckOvertime(
+      minuteOfDay: _minuteOfDay,
+      workEndMinute: settings.workEndMinute,
+      autoDetect: settings.overtimeAutoDetect,
+    );
+    if (auto == _overtime) return;
+    if (notify) {
+      setState(() => _overtime = auto);
+    } else {
+      _overtime = auto;
+    }
+  }
+
+  /// 改「具体时间」（精确到分钟）。
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: _minuteOfDay ~/ 60, minute: _minuteOfDay % 60),
+      helpText: '这笔活是几点做完的？',
+      cancelText: '取消',
+      confirmText: '确定',
+      builder: (context, child) => MediaQuery(
+        // 时间选择器在超大字号下会被挤压，这里单独限一下缩放
+        data: MediaQuery.of(context).copyWith(
+          textScaler: MediaQuery.textScalerOf(context).clamp(
+                minScaleFactor: 1.0,
+                maxScaleFactor: 1.3,
+              ),
+        ),
+        child: child ?? const SizedBox.shrink(),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _minuteOfDay = picked.hour * 60 + picked.minute;
+      _syncOvertimeAuto(notify: false);
     });
   }
 
@@ -134,6 +193,7 @@ class _CountPageState extends State<CountPage> {
     return value;
   }
 
+  /// 正常班单价（可能来自手填）。
   int? get _effectivePrice {
     if (_manualPriceEnabled) {
       final parsed = Money.tryParsePrice(_manualPrice.text);
@@ -143,9 +203,31 @@ class _CountPageState extends State<CountPage> {
     return _toy?.unitPriceTenThousandth;
   }
 
+  /// 加班时的实际单价与倍率；不加班返回 null。
+  ///
+  /// 口径由设置决定（倍数 / 玩具加班单价），算法只有
+  /// [OvertimeRules.resolve] 一处，界面上看到的就是最终入账的。
+  OvertimePricing? get _overtimePricing {
+    final toy = _toy;
+    final base = _effectivePrice;
+    final settings = _services?.settings;
+    if (!_overtime || toy == null || base == null || settings == null) {
+      return null;
+    }
+    return OvertimeRules.resolve(
+      toy: toy,
+      basePriceTenThousandth: base,
+      mode: settings.overtimeMode,
+      multiplierPerMille: settings.overtimeMultiplierPerMille,
+    );
+  }
+
+  /// 真正参与计算的单价。
+  int? get _pricingPrice => _overtime ? _overtimePricing?.priceTenThousandth : _effectivePrice;
+
   int? get _subtotal {
     final quantity = _quantityValue;
-    final price = _effectivePrice;
+    final price = _pricingPrice;
     if (quantity == null || price == null) return null;
     return Money.subtotalCents(quantity: quantity, priceTenThousandth: price);
   }
@@ -222,12 +304,19 @@ class _CountPageState extends State<CountPage> {
       showToast(context, '单价格式不对，最多 4 位小数', isError: true);
       return;
     }
+    final pricing = _overtimePricing;
+    final pricingPrice = _overtime ? pricing?.priceTenThousandth : price;
+    if (pricingPrice == null) {
+      showToast(context, '加班单价算不出来，请检查玩具档案或加班设置', isError: true);
+      return;
+    }
     if (_locked) {
       showToast(context, '该月份已锁账，需先到结算页解锁', isError: true);
       return;
     }
 
-    final subtotal = Money.subtotalCents(quantity: quantity, priceTenThousandth: price);
+    final subtotal =
+        Money.subtotalCents(quantity: quantity, priceTenThousandth: pricingPrice);
 
     // 防呆：超大件数或金额二次确认
     final needConfirm = quantity > Limits.confirmQuantityAbove ||
@@ -237,6 +326,8 @@ class _CountPageState extends State<CountPage> {
         context,
         title: '请再确认一次',
         message: '本次录入 ${worker.name} × ${toy.displayName}\n'
+            '时间 ${widget.selection.date} ${Dates.hhmm(_minuteOfDay)}'
+            '${_overtime ? '（加班 ×${pricing?.multiplierLabel}）' : ''}\n'
             '数量 $quantity 件，小计 ${Money.formatCents(subtotal)} 元\n'
             '数字是不是填多了？',
         confirmText: '确认无误',
@@ -255,6 +346,10 @@ class _CountPageState extends State<CountPage> {
         remark: _remark.text,
         recordId: recordId,
         unitPriceTenThousandth: _manualPriceEnabled ? price : null,
+        minuteOfDay: _minuteOfDay,
+        overtime: _overtime,
+        overtimePriceTenThousandth: pricing?.priceTenThousandth,
+        overtimeMultiplier: pricing?.multiplierPerMille ?? 1000,
       );
       _pendingRecordId = null;
       if (!mounted) return;
@@ -451,24 +546,38 @@ class _CountPageState extends State<CountPage> {
   }
 
   Widget _buildDateBar(ThemeData theme, String date, bool isToday) {
-    return Row(
+    final mutedStyle =
+        theme.textTheme.bodyLarge?.copyWith(color: AppTheme.muted);
+    return Column(
       children: [
-        Icon(Icons.event_outlined, size: 22, color: AppTheme.muted),
-        const SizedBox(width: 8),
-        Text(
-          '记账日期',
-          style: theme.textTheme.bodyLarge?.copyWith(color: AppTheme.muted),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            isToday ? '$date（今天）' : date,
-            style: theme.textTheme.titleMedium?.copyWith(
-              color: isToday ? AppTheme.primary : AppTheme.danger,
+        Row(
+          children: [
+            Icon(Icons.event_outlined, size: 22, color: AppTheme.muted),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                isToday ? '$date（今天）' : date,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: isToday ? AppTheme.primary : AppTheme.danger,
+                ),
+              ),
             ),
-          ),
+            TextButton(onPressed: _changeDate, child: const Text('改日期')),
+          ],
         ),
-        TextButton(onPressed: _changeDate, child: const Text('改日期')),
+        Row(
+          children: [
+            Icon(Icons.schedule_outlined, size: 22, color: AppTheme.muted),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '记账时间 ${Dates.hhmm(_minuteOfDay)}',
+                style: mutedStyle,
+              ),
+            ),
+            TextButton(onPressed: _pickTime, child: const Text('改时间')),
+          ],
+        ),
       ],
     );
   }
@@ -586,35 +695,62 @@ class _CountPageState extends State<CountPage> {
             ),
           ],
           const SizedBox(height: 12),
+          _buildOvertimeRow(theme),
+          const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             decoration: BoxDecoration(
-              color: AppTheme.primary.withValues(alpha: 0.06),
+              color: (_overtime ? AppTheme.warning : AppTheme.primary)
+                  .withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  '小计',
-                  style: theme.textTheme.titleMedium?.copyWith(color: AppTheme.muted),
+                // 单价说明单独一行，超大字号下自动换行，不会把金额挤出去
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 2,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      '小计',
+                      style: theme.textTheme.titleMedium
+                          ?.copyWith(color: AppTheme.muted),
+                    ),
+                    if (price != null)
+                      Text(
+                        _overtime && _overtimePricing != null
+                            ? '${_quantityValue ?? 0} 件 × ${_overtimePricing!.priceLabel}'
+                                '（加班 ×${_overtimePricing!.multiplierLabel}）'
+                            : '${_quantityValue ?? 0} × ${Money.formatPrice(price)}',
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(color: AppTheme.muted),
+                      ),
+                  ],
                 ),
-                const SizedBox(width: 10),
-                if (price != null)
-                  Text(
-                    '${_quantityValue ?? 0} × ${Money.formatPrice(price)}',
-                    style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
-                  ),
-                const Spacer(),
-                Text(
-                  subtotal == null ? '—' : Money.formatCents(subtotal),
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    color: AppTheme.primary,
-                    fontSize: 32,
-                    fontWeight: FontWeight.w800,
-                  ),
+                const SizedBox(height: 6),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        subtotal == null ? '—' : Money.formatCents(subtotal),
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          color: _overtime ? AppTheme.warning : AppTheme.primary,
+                          fontSize: 32,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '元',
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: AppTheme.muted),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 4),
-                Text('元', style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted)),
               ],
             ),
           ),
@@ -626,6 +762,82 @@ class _CountPageState extends State<CountPage> {
               labelText: '备注（可不填）',
               hintText: '如：蓝色款 / 返工',
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 加班开关：打开后单价按设置的口径换算，小计实时跟着变。
+  Widget _buildOvertimeRow(ThemeData theme) {
+    final settings = _services?.settings;
+    final toy = _toy;
+    final pricing = _overtimePricing;
+
+    String hint;
+    if (!_overtime) {
+      hint = '点右侧开关，标记这一笔是加班干的';
+    } else if (pricing == null) {
+      hint = '选好玩具与工序后，才能算出加班单价';
+    } else if (settings?.overtimeMode == OvertimeMode.unitPrice &&
+        toy != null &&
+        !toy.hasOvertimePrice) {
+      hint = '「${toy.name}」没填加班单价，已按 ×${pricing.multiplierLabel} 兜底';
+    } else {
+      final base = _effectivePrice;
+      hint = base == null
+          ? '加班单价 ${pricing.priceLabel} 元'
+          : '单价 ${Money.formatPrice(base)} → ${pricing.priceLabel} 元'
+              '（×${pricing.multiplierLabel}）';
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: _overtime
+            ? AppTheme.warning.withValues(alpha: 0.08)
+            : const Color(0xFFF7F8FA),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: _overtime
+              ? AppTheme.warning.withValues(alpha: 0.4)
+              : const Color(0xFFE6E9EF),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        children: [
+          Icon(
+            _overtime ? Icons.nightlight_round : Icons.wb_sunny_outlined,
+            color: _overtime ? AppTheme.warning : AppTheme.muted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _overtime ? '加班' : '正常班',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: _overtime ? AppTheme.warning : null,
+                  ),
+                ),
+                Text(
+                  hint,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: AppTheme.muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: _overtime,
+            onChanged: (value) => setState(() {
+              _overtime = value;
+              // 手动选择优先级最高，之后的自动预勾不再覆盖
+              _overtimeManual = true;
+            }),
           ),
         ],
       ),
@@ -675,14 +887,50 @@ class _CountPageState extends State<CountPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    '${record.workerNameSnapshot} · ${record.toyNameSnapshot}'
-                    '${record.processSnapshot == Defaults.defaultProcess ? '' : ' / ${record.processSnapshot}'}',
-                    style: theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
+                  // 时间放最前面：车间里最常问的就是「几点记的这笔」
+                  Row(
+                    children: [
+                      Text(
+                        record.timeLabel,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: AppTheme.muted,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      if (record.overtime) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppTheme.warning.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '加班 ×${record.overtimeMultiplierLabel}',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: AppTheme.warning,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Expanded(
+                        child: Text(
+                          '${record.workerNameSnapshot} · ${record.toyNameSnapshot}'
+                          '${record.processSnapshot == Defaults.defaultProcess ? '' : ' / ${record.processSnapshot}'}',
+                          style: theme.textTheme.bodyLarge
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${record.quantity} 件 × ${record.priceLabel}'
+                    '${record.quantity} 件 × ${record.pricingPriceLabel}'
                     '${record.remark.isEmpty ? '' : ' · ${record.remark}'}',
                     style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
                   ),

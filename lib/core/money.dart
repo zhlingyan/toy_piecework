@@ -22,8 +22,29 @@ class Money {
     return (quantity * priceTenThousandth + 50) ~/ 100;
   }
 
-  /// 把「元」字符串解析为万分之一元整数，最多支持 4 位小数。
+  /// 加班倍率换算：单价 × 倍率，四舍五入到万分之一元。
   ///
+  /// 倍率用**千分比**表示（1500 = 1.5 倍），这样 1.25、1.8 这类非整数倍
+  /// 也能精确落在整数上，不必引入 double。
+  /// 例：0.20 元（2000）× 1.5 => 3000（0.30 元）。
+  static int applyMultiplier(int priceTenThousandth, int multiplierPerMille) {
+    assert(priceTenThousandth >= 0, '单价不能为负');
+    assert(multiplierPerMille > 0, '倍率必须大于 0');
+    if (multiplierPerMille == 1000) return priceTenThousandth;
+    return (priceTenThousandth * multiplierPerMille + 500) ~/ 1000;
+  }
+
+  /// 倍率展示：1500 => "1.5"，1250 => "1.25"，1000 => "1.0"。
+  static String formatMultiplier(int multiplierPerMille) {
+    final whole = multiplierPerMille ~/ 1000;
+    var frac = (multiplierPerMille % 1000).toString().padLeft(3, '0');
+    while (frac.length > 1 && frac.endsWith('0')) {
+      frac = frac.substring(0, frac.length - 1);
+    }
+    return '$whole.$frac';
+  }
+
+  /// 把「元」字符串解析为万分之一元整数，最多支持 4 位小数。
   /// 超过 4 位时按第 5 位四舍五入（用户输入 0.03599 得 0.0360，不抛错）。
   /// 非法输入返回 null，由调用方决定提示文案。
   static int? tryParsePrice(String raw) => _parseScaled(raw, 4);

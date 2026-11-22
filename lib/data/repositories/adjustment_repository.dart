@@ -199,7 +199,7 @@ class AdjustmentRepository {
       Tables.adjustments,
       where: where.join(' AND '),
       whereArgs: args,
-      orderBy: 'date DESC, created_at DESC',
+      orderBy: 'date DESC, minute_of_day DESC, created_at DESC',
     );
     return rows.map(Adjustment.fromMap).toList(growable: false);
   }

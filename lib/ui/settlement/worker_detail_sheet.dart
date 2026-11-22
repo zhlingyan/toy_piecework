@@ -306,13 +306,37 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '${group.toyName}${group.process == Defaults.defaultProcess ? '' : ' / ${group.process}'}',
-                  style: theme.textTheme.bodyLarge
-                      ?.copyWith(fontWeight: FontWeight.w600),
+                Row(
+                  children: [
+                    if (group.overtime) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: AppTheme.warning.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          group.overtimeSuffix,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: AppTheme.warning,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    Expanded(
+                      child: Text(
+                        '${group.toyName}${group.process == Defaults.defaultProcess ? '' : ' / ${group.process}'}',
+                        style: theme.textTheme.bodyLarge
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
                 ),
                 Text(
-                  '${group.quantity} 件 × ${Money.formatPrice(group.unitPriceTenThousandth)} 元',
+                  '${group.quantity} 件 × ${Money.formatPrice(group.pricingPriceTenThousandth)} 元',
                   style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
                 ),
               ],

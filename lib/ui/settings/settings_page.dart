@@ -1,6 +1,9 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/constants.dart';
+import '../../core/dates.dart';
 import '../../core/failures.dart';
+import '../../core/money.dart';
 import '../../data/services/backup_service.dart';
 import '../../services/app_services.dart';
 import '../archives/toys_page.dart';
@@ -197,6 +200,129 @@ class _SettingsPageState extends State<SettingsPage> {
               child: LinearProgressIndicator(),
             ),
           SectionCard(
+            title: '显示与字号',
+            child: AnimatedBuilder(
+              animation: services.settings,
+              builder: (context, _) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      _fontChoice(services, '标准', Defaults.fontScaleStandard),
+                      _fontChoice(services, '大', Defaults.fontScaleLarge),
+                      _fontChoice(services, '超大', Defaults.fontScaleHuge),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  MutedText('选完立即生效，不用重启。字大了以后每页都会自动重排，不会挤成一行。'),
+                ],
+              ),
+            ),
+          ),
+          SectionCard(
+            title: '加班',
+            child: AnimatedBuilder(
+              animation: services.settings,
+              builder: (context, _) {
+                final settings = services.settings;
+                final byMultiplier =
+                    settings.overtimeMode == OvertimeMode.multiplier;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    MutedText('加班费怎么算'),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        ChoiceChip(
+                          label: const Text('按倍数乘'),
+                          selected: byMultiplier,
+                          onSelected: (_) => settings
+                              .setOvertimeMode(OvertimeMode.multiplier),
+                        ),
+                        ChoiceChip(
+                          label: const Text('按玩具加班单价'),
+                          selected: !byMultiplier,
+                          onSelected: (_) =>
+                              settings.setOvertimeMode(OvertimeMode.unitPrice),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    if (byMultiplier) ...[
+                      MutedText('加班倍率'),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          for (final perMille in const [1200, 1500, 1800, 2000])
+                            ChoiceChip(
+                              label: Text('×${Money.formatMultiplier(perMille)}'),
+                              selected:
+                                  settings.overtimeMultiplierPerMille == perMille,
+                              onSelected: (_) => settings
+                                  .setOvertimeMultiplierPerMille(perMille),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      MutedText(
+                        '例：正常单价 0.20 元，加班按 '
+                        '×${Money.formatMultiplier(settings.overtimeMultiplierPerMille)}'
+                        ' 就是 '
+                        '${Money.formatPrice(Money.applyMultiplier(2000, settings.overtimeMultiplierPerMille))}'
+                        ' 元/件。',
+                      ),
+                    ] else
+                      MutedText(
+                        '每个玩具的加班单价到「玩具与工序」里单独填。'
+                        '没填的玩具会自动按 ×'
+                        '${Money.formatMultiplier(settings.overtimeMultiplierPerMille)}'
+                        ' 兜底，不会算成白干。',
+                      ),
+                    const Divider(height: 28),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: settings.overtimeAutoDetect,
+                      onChanged: settings.setOvertimeAutoDetect,
+                      title: const Text('过了下班时间自动标记加班'),
+                      subtitle: const Text('只是帮你预先勾上，随时能改回来'),
+                    ),
+                    if (settings.overtimeAutoDetect)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('正常下班时间'),
+                        subtitle: Text(
+                          '晚于 ${Dates.hhmm(settings.workEndMinute)} 录入的自动算加班',
+                        ),
+                        trailing: TextButton(
+                          onPressed: () async {
+                            final picked = await showTimePicker(
+                              context: context,
+                              initialTime: TimeOfDay(
+                                hour: settings.workEndMinute ~/ 60,
+                                minute: settings.workEndMinute % 60,
+                              ),
+                              helpText: '正常几点下班？',
+                            );
+                            if (picked == null) return;
+                            await settings
+                                .setWorkEndMinute(picked.hour * 60 + picked.minute);
+                          },
+                          child: const Text('修改'),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+          SectionCard(
             title: '档案管理',
             child: Column(
               children: [
@@ -356,6 +482,21 @@ class _SettingsPageState extends State<SettingsPage> {
     String two(int value) => value.toString().padLeft(2, '0');
     return '自动备份已开启 · 上次 '
         '${two(time.month)}-${two(time.day)} ${two(time.hour)}:${two(time.minute)}';
+  }
+
+  Widget _fontChoice(AppServices services, String label, double scale) {
+    final selected = services.settings.fontScale == scale;
+    return ChoiceChip(
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 17,
+          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+        ),
+      ),
+      selected: selected,
+      onSelected: (_) => services.settings.setFontScale(scale),
+    );
   }
 
   Widget _buildTile({

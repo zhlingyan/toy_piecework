@@ -110,6 +110,7 @@ class ToyRepository {
     required String name,
     String process = Defaults.defaultProcess,
     required int unitPriceTenThousandth,
+    int overtimePriceTenThousandth = 0,
     String pinyinInitials = '',
     DatabaseExecutor? ex,
   }) {
@@ -121,6 +122,9 @@ class ToyRepository {
       }
       if (unitPriceTenThousandth < 0) {
         throw const ValidationFailure('单价不能为负数');
+      }
+      if (overtimePriceTenThousandth < 0) {
+        throw const ValidationFailure('加班单价不能为负数');
       }
       final duplicated = await findByNameAndProcess(
         trimmedName,
@@ -138,6 +142,7 @@ class ToyRepository {
         name: trimmedName,
         process: trimmedProcess,
         unitPriceTenThousandth: unitPriceTenThousandth,
+        overtimePriceTenThousandth: overtimePriceTenThousandth,
         pinyinInitials: pinyinInitials.trim().toUpperCase(),
         isArchived: false,
         createdAt: now,
@@ -159,6 +164,9 @@ class ToyRepository {
       }
       if (toy.unitPriceTenThousandth < 0) {
         throw const ValidationFailure('单价不能为负数');
+      }
+      if (toy.overtimePriceTenThousandth < 0) {
+        throw const ValidationFailure('加班单价不能为负数');
       }
       final existing = await findById(toy.id, ex: executor);
       if (existing == null) {

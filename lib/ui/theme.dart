@@ -10,6 +10,9 @@ class AppTheme {
   static const Color primary = Color(0xFF14549B);
   static const Color danger = Color(0xFFC62828);
   static const Color success = Color(0xFF1B7F3B);
+
+  /// 加班相关的高亮色（暖色，与正常班的蓝区分开）。
+  static const Color warning = Color(0xFFB25E00);
   static const Color background = Color(0xFFF2F4F7);
   static const Color surface = Colors.white;
   static const Color muted = Color(0xFF5B6472);

@@ -229,7 +229,9 @@ class _ToysPageState extends State<ToysPage> {
           ],
         ),
         subtitle: Text(
-          '单价 ${toy.priceLabel} 元 · 首字母 ${toy.pinyinInitials.isEmpty ? '—' : toy.pinyinInitials}',
+          '单价 ${toy.priceLabel} 元'
+          '${toy.hasOvertimePrice ? ' · 加班 ${toy.overtimePriceLabel} 元' : ''}'
+          ' · 首字母 ${toy.pinyinInitials.isEmpty ? '—' : toy.pinyinInitials}',
           style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.muted),
         ),
         trailing: Row(
@@ -268,6 +270,7 @@ class _ToyEditorState extends State<_ToyEditor> {
   late final TextEditingController _name;
   late final TextEditingController _process;
   late final TextEditingController _price;
+  late final TextEditingController _overtimePrice;
   late final TextEditingController _initials;
 
   bool _saving = false;
@@ -286,6 +289,11 @@ class _ToyEditorState extends State<_ToyEditor> {
     _price = TextEditingController(
       text: toy == null ? '' : Money.formatPrice(toy.unitPriceTenThousandth),
     );
+    _overtimePrice = TextEditingController(
+      text: toy == null || !toy.hasOvertimePrice
+          ? ''
+          : Money.formatPrice(toy.overtimePriceTenThousandth),
+    );
     _initials = TextEditingController(text: toy?.pinyinInitials ?? '');
   }
 
@@ -294,6 +302,7 @@ class _ToyEditorState extends State<_ToyEditor> {
     _name.dispose();
     _process.dispose();
     _price.dispose();
+    _overtimePrice.dispose();
     _initials.dispose();
     super.dispose();
   }
@@ -321,6 +330,16 @@ class _ToyEditorState extends State<_ToyEditor> {
       showToast(context, '单价格式不对，最多 4 位小数，如 0.035', isError: true);
       return;
     }
+    // 加班单价留空 = 不单独设置，加班时按倍率兜底
+    int overtimePrice = 0;
+    if (_overtimePrice.text.trim().isNotEmpty) {
+      final parsed = Money.tryParsePrice(_overtimePrice.text);
+      if (parsed == null) {
+        showToast(context, '加班单价格式不对，最多 4 位小数', isError: true);
+        return;
+      }
+      overtimePrice = parsed;
+    }
     setState(() => _saving = true);
     try {
       final toy = widget.toy;
@@ -329,6 +348,7 @@ class _ToyEditorState extends State<_ToyEditor> {
           name: _name.text,
           process: _process.text,
           unitPriceTenThousandth: price,
+          overtimePriceTenThousandth: overtimePrice,
           pinyinInitials: _initials.text,
         );
       } else {
@@ -337,6 +357,7 @@ class _ToyEditorState extends State<_ToyEditor> {
             name: _name.text,
             process: _process.text,
             unitPriceTenThousandth: price,
+            overtimePriceTenThousandth: overtimePrice,
             pinyinInitials: _initials.text,
           ),
         );
@@ -400,6 +421,18 @@ class _ToyEditorState extends State<_ToyEditor> {
                 labelText: '单价（元）',
                 hintText: '如 0.035',
                 helperText: '最多 4 位小数。调价只影响以后录入，历史按原单价快照计算',
+                suffixText: '元',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _overtimePrice,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+              decoration: const InputDecoration(
+                labelText: '加班单价（元，可不填）',
+                hintText: '留空则按倍率算',
+                helperText: '设置里选「按玩具加班单价」时用这个价；留空自动回退到倍率',
                 suffixText: '元',
               ),
             ),

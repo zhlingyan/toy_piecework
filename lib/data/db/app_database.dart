@@ -40,6 +40,17 @@ class AppDatabase {
             await db.execute(statement);
           }
         },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          // 升级必须在一个事务里完成：任一步失败就整体回滚，
+          // 保证不会留下「加了一半列」的半残账本。
+          await db.transaction((txn) async {
+            if (oldVersion < 2) {
+              for (final statement in Schema.migrateV1ToV2) {
+                await txn.execute(statement);
+              }
+            }
+          });
+        },
       ),
     );
     return AppDatabase._(db);

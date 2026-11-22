@@ -65,9 +65,18 @@ class CsvExportService {
       '扣款(元)',
       '预支(元)',
       '应付(元)',
+      '加班件数',
+      '其中加班工资(元)',
       '说明',
     ]));
     for (final worker in result.workers) {
+      // 加班单独列出来，方便核对「这个月加了多少班、多拿了多少」
+      final overtimeQuantity = worker.groups
+          .where((group) => group.overtime)
+          .fold(0, (sum, group) => sum + group.quantity);
+      final overtimeCents = worker.groups
+          .where((group) => group.overtime)
+          .fold(0, (sum, group) => sum + group.subtotalCents);
       buffer.write(_row([
         worker.workerCode,
         worker.workerName,
@@ -77,6 +86,8 @@ class CsvExportService {
         Money.formatCents(worker.deductionCents),
         Money.formatCents(worker.advanceCents),
         Money.formatCents(worker.netCents),
+        '$overtimeQuantity',
+        Money.formatCents(overtimeCents),
         worker.isArchived ? '已停用档案' : '',
       ]));
     }
@@ -89,6 +100,8 @@ class CsvExportService {
       Money.formatCents(result.deductionTotal),
       Money.formatCents(result.advanceTotal),
       Money.formatCents(result.totalNetCents),
+      '',
+      '',
       '${result.range.label}，逐笔取整后合计',
     ]));
     return buffer.toString();

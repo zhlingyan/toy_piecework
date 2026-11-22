@@ -8,6 +8,12 @@ class AppClock {
 
   static int nowMillis() => now().millisecondsSinceEpoch;
 
+  /// 当前时刻是当天第几分钟（0..1439），录默认时间用。
+  static int nowMinuteOfDay() {
+    final t = now();
+    return t.hour * 60 + t.minute;
+  }
+
   /// 仅供测试使用。
   static void override(DateTime Function() fn) => _now = fn;
 

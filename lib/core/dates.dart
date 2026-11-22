@@ -59,6 +59,41 @@ class Dates {
 
   /// 判断两个月份是否相邻或相同（用于结算页快捷区间提示，无则返回 false）。
   static int compareYmd(String a, String b) => a.compareTo(b);
+
+  // ---- 时分（精确到分钟）----
+  //
+  // 只存「当天第几分钟」(0..1439)，不存时间戳：
+  // 它不带时区、不受夏令时影响、能直接参与字符串/整数排序，
+  // 且与已有的 `date` 列拼起来就是完整的业务发生时间。
+
+  /// 一天的总分钟数。
+  static const int minutesPerDay = 24 * 60;
+
+  /// 取当前时刻是当天第几分钟。
+  static int minuteOfDay(DateTime time) => time.hour * 60 + time.minute;
+
+  /// 把分钟数格式化为 `HH:mm`，越界自动收敛到当天范围内。
+  static String hhmm(int minuteOfDay) {
+    final m = minuteOfDay.clamp(0, minutesPerDay - 1);
+    final h = (m ~/ 60).toString().padLeft(2, '0');
+    final mm = (m % 60).toString().padLeft(2, '0');
+    return '$h:$mm';
+  }
+
+  /// `HH:mm` 形式的展示，附带「上午/下午」可读性（列表里用）。
+  static String hhmmLabel(int minuteOfDay) => hhmm(minuteOfDay);
+
+  /// 把 `YYYY-MM-DD` + 分钟数合成为 `DateTime`，用于日期+时间选择器。
+  static DateTime combine(String ymdValue, int minuteOfDay) {
+    final d = tryParseYmd(ymdValue);
+    if (d == null) throw ArgumentError('非法日期: $ymdValue');
+    final m = minuteOfDay.clamp(0, minutesPerDay - 1);
+    return DateTime(d.year, d.month, d.day, m ~/ 60, m % 60);
+  }
+
+  /// 从 `DateTime` 取出 `(YYYY-MM-DD, 分钟)`。
+  static ({String date, int minute}) split(DateTime time) =>
+      (date: ymd(time), minute: minuteOfDay(time));
 }
 
 /// 结算/查询区间，起止均为**闭区间**（含边界）。

@@ -35,12 +35,17 @@ class SettlementRepository {
              MAX(toy_name_snapshot) AS toy_name,
              process_snapshot,
              unit_price_snapshot,
+             overtime,
+             overtime_price_snapshot,
+             MAX(overtime_multiplier) AS overtime_multiplier,
              SUM(quantity) AS qty,
              SUM(subtotal_cents) AS total_cents
         FROM ${Tables.pieceRecords}
        WHERE date >= ? AND date <= ? AND deleted_at IS NULL$whereWorker
-       GROUP BY worker_id, toy_id, process_snapshot, unit_price_snapshot
-       ORDER BY toy_name ASC, process_snapshot ASC, unit_price_snapshot ASC
+       GROUP BY worker_id, toy_id, process_snapshot, unit_price_snapshot,
+                overtime, overtime_price_snapshot
+       ORDER BY toy_name ASC, process_snapshot ASC, unit_price_snapshot ASC,
+                overtime ASC
       ''',
       pieceArgs,
     );
@@ -101,6 +106,10 @@ class SettlementRepository {
               unitPriceTenThousandth: (row['unit_price_snapshot'] as int?) ?? 0,
               quantity: (row['qty'] as int?) ?? 0,
               subtotalCents: subtotal,
+              overtime: ((row['overtime'] as int?) ?? 0) != 0,
+              overtimePriceTenThousandth:
+                  (row['overtime_price_snapshot'] as int?) ?? 0,
+              overtimeMultiplier: (row['overtime_multiplier'] as int?) ?? 1000,
             ),
           );
       pieceCentsByWorker[id] = (pieceCentsByWorker[id] ?? 0) + subtotal;

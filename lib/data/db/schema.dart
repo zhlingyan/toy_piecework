@@ -8,7 +8,7 @@ import '../../core/constants.dart';
 class Schema {
   Schema._();
 
-  static const int version = 1;
+  static const int version = 2;
 
   static const List<String> createStatements = [
     '''
@@ -28,6 +28,7 @@ class Schema {
       name TEXT NOT NULL,
       process TEXT NOT NULL DEFAULT '${Defaults.defaultProcess}',
       unit_price_ten_thousandth INTEGER NOT NULL DEFAULT 0,
+      overtime_price_ten_thousandth INTEGER NOT NULL DEFAULT 0,
       pinyin_initials TEXT NOT NULL DEFAULT '',
       is_archived INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
@@ -38,6 +39,7 @@ class Schema {
     CREATE TABLE ${Tables.pieceRecords} (
       id TEXT PRIMARY KEY NOT NULL,
       date TEXT NOT NULL,
+      minute_of_day INTEGER NOT NULL DEFAULT 0,
       worker_id TEXT NOT NULL,
       toy_id TEXT NOT NULL,
       worker_name_snapshot TEXT NOT NULL,
@@ -46,6 +48,9 @@ class Schema {
       unit_price_snapshot INTEGER NOT NULL,
       quantity INTEGER NOT NULL,
       subtotal_cents INTEGER NOT NULL,
+      overtime INTEGER NOT NULL DEFAULT 0,
+      overtime_price_snapshot INTEGER NOT NULL DEFAULT 0,
+      overtime_multiplier INTEGER NOT NULL DEFAULT 1000,
       remark TEXT NOT NULL DEFAULT '',
       deleted_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -57,6 +62,7 @@ class Schema {
     CREATE TABLE ${Tables.adjustments} (
       id TEXT PRIMARY KEY NOT NULL,
       date TEXT NOT NULL,
+      minute_of_day INTEGER NOT NULL DEFAULT 0,
       worker_id TEXT NOT NULL,
       worker_name_snapshot TEXT NOT NULL,
       type TEXT NOT NULL,
@@ -83,6 +89,7 @@ class Schema {
     'CREATE INDEX idx_toys_archived ON ${Tables.toys}(is_archived)',
     'CREATE INDEX idx_toys_name_process ON ${Tables.toys}(name, process)',
     'CREATE INDEX idx_records_date ON ${Tables.pieceRecords}(date)',
+    'CREATE INDEX idx_records_date_minute ON ${Tables.pieceRecords}(date, minute_of_day)',
     'CREATE INDEX idx_records_worker_date ON ${Tables.pieceRecords}(worker_id, date)',
     'CREATE INDEX idx_records_toy_date ON ${Tables.pieceRecords}(toy_id, date)',
     'CREATE INDEX idx_records_deleted ON ${Tables.pieceRecords}(deleted_at)',
@@ -98,5 +105,34 @@ class Schema {
     'DELETE FROM ${Tables.toys}',
     'DELETE FROM ${Tables.workers}',
     'DELETE FROM ${Tables.lockedMonths}',
+  ];
+
+  /// v1 → v2：补「精确到分钟」「加班」两组字段。
+  ///
+  /// 迁移是**原地加列**，不改任何既有值：
+  /// * `minute_of_day` 先用录入时刻的本地时分回填，老账的时间顺序至少有据可依；
+  /// * 所有老流水 `overtime = 0`，等价于「非加班」，金额与升级前**完全一致**；
+  /// * 玩具的加班单价默认 0（未设置），按倍率模式兜底，不会出现 0 元工资。
+  static const List<String> migrateV1ToV2 = [
+    'ALTER TABLE ${Tables.toys} '
+        'ADD COLUMN overtime_price_ten_thousandth INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE ${Tables.pieceRecords} '
+        'ADD COLUMN minute_of_day INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE ${Tables.pieceRecords} '
+        'ADD COLUMN overtime INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE ${Tables.pieceRecords} '
+        'ADD COLUMN overtime_price_snapshot INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE ${Tables.pieceRecords} '
+        'ADD COLUMN overtime_multiplier INTEGER NOT NULL DEFAULT 1000',
+    'ALTER TABLE ${Tables.adjustments} '
+        'ADD COLUMN minute_of_day INTEGER NOT NULL DEFAULT 0',
+    // 用录入时刻回填时分（created_at 是毫秒，先换算成秒再取本地时分）。
+    "UPDATE ${Tables.pieceRecords} SET minute_of_day = "
+        "CAST(strftime('%H', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER) * 60 + "
+        "CAST(strftime('%M', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER)",
+    "UPDATE ${Tables.adjustments} SET minute_of_day = "
+        "CAST(strftime('%H', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER) * 60 + "
+        "CAST(strftime('%M', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER)",
+    'CREATE INDEX idx_records_date_minute ON ${Tables.pieceRecords}(date, minute_of_day)',
   ];
 }

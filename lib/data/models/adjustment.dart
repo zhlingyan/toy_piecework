@@ -14,6 +14,7 @@ class Adjustment {
     required this.deletedAt,
     required this.createdAt,
     required this.updatedAt,
+    this.minuteOfDay = 0,
   });
 
   factory Adjustment.fromMap(Map<String, Object?> map) {
@@ -28,6 +29,7 @@ class Adjustment {
       deletedAt: map['deleted_at'] as int?,
       createdAt: map['created_at']! as int,
       updatedAt: map['updated_at']! as int,
+      minuteOfDay: (map['minute_of_day'] as int?) ?? 0,
     );
   }
 
@@ -47,6 +49,15 @@ class Adjustment {
   final int createdAt;
   final int updatedAt;
 
+  /// 当天第几分钟（0..1439），用于同日内排序与展示。
+  final int minuteOfDay;
+
+  String get timeLabel {
+    final h = (minuteOfDay ~/ 60).toString().padLeft(2, '0');
+    final m = (minuteOfDay % 60).toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
   bool get isDeleted => deletedAt != null;
 
   /// 计入应付的带符号金额（分）。
@@ -56,6 +67,7 @@ class Adjustment {
 
   Adjustment copyWith({
     String? date,
+    int? minuteOfDay,
     String? workerId,
     String? workerNameSnapshot,
     AdjustmentType? type,
@@ -68,6 +80,7 @@ class Adjustment {
     return Adjustment(
       id: id,
       date: date ?? this.date,
+      minuteOfDay: minuteOfDay ?? this.minuteOfDay,
       workerId: workerId ?? this.workerId,
       workerNameSnapshot: workerNameSnapshot ?? this.workerNameSnapshot,
       type: type ?? this.type,
@@ -89,6 +102,7 @@ class Adjustment {
         'remark': remark,
         'deleted_at': deletedAt,
         'created_at': createdAt,
+        'minute_of_day': minuteOfDay,
         'updated_at': updatedAt,
       };
 }

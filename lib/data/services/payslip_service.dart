@@ -418,9 +418,11 @@ class _PayslipRow {
 
   factory _PayslipRow.piece(PieceGroup group) {
     return _PayslipRow(
-      title: '${group.toyName}'
+      title: '${group.overtime ? '【加班】' : ''}${group.toyName}'
           '${group.process == Defaults.defaultProcess ? '' : ' / ${group.process}'}',
-      subtitle: '${group.quantity} 件 × ${Money.formatPrice(group.unitPriceTenThousandth)}',
+      subtitle: '${group.quantity} 件 × '
+          '${Money.formatPrice(group.pricingPriceTenThousandth)}'
+          '${group.overtime ? '（${group.overtimeSuffix}）' : ''}',
       amount: Money.formatCents(group.subtotalCents),
       amountColor: const Color(0xFF1B2430),
     );

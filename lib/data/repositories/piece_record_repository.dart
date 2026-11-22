@@ -47,6 +47,10 @@ class PieceRecordRepository {
     String? recordId,
     int? unitPriceTenThousandth,
     String? processSnapshot,
+    int? minuteOfDay,
+    bool overtime = false,
+    int? overtimePriceTenThousandth,
+    int overtimeMultiplier = 1000,
     DatabaseExecutor? ex,
   }) {
     return _run(ex, (executor) async {
@@ -60,6 +64,15 @@ class PieceRecordRepository {
       if (price < 0) {
         throw const ValidationFailure('单价不能为负数');
       }
+
+      // 加班单价由调用方（OvertimeRules）算好传进来，这里只做合法性校验：
+      // 勾了加班却没有有效加班价，宁可报错也不静默按正常价入账。
+      final overtimePrice = overtimePriceTenThousandth ?? 0;
+      final isOvertime = overtime;
+      if (isOvertime && overtimePrice <= 0) {
+        throw const ValidationFailure('加班单价必须大于 0');
+      }
+      final pricingPrice = isOvertime ? overtimePrice : price;
 
       await MonthLockGuard.assertEditable(executor, [Dates.ymOfYmd(date)]);
 
@@ -78,8 +91,13 @@ class PieceRecordRepository {
         quantity: quantity,
         subtotalCents: Money.subtotalCents(
           quantity: quantity,
-          priceTenThousandth: price,
+          priceTenThousandth: pricingPrice,
         ),
+        minuteOfDay: (minuteOfDay ?? AppClock.nowMinuteOfDay())
+            .clamp(0, Dates.minutesPerDay - 1),
+        overtime: isOvertime,
+        overtimePriceSnapshot: isOvertime ? overtimePrice : 0,
+        overtimeMultiplier: isOvertime ? overtimeMultiplier : 1000,
         remark: remark.trim(),
         deletedAt: null,
         createdAt: now,
@@ -115,6 +133,10 @@ class PieceRecordRepository {
     String? toyId,
     String? toyNameSnapshot,
     String? processSnapshot,
+    int? minuteOfDay,
+    bool? overtime,
+    int? overtimePriceTenThousandth,
+    int? overtimeMultiplier,
     DatabaseExecutor? ex,
   }) {
     return _run(ex, (executor) async {
@@ -146,21 +168,40 @@ class PieceRecordRepository {
         targetDate: newDate,
       );
 
-      final sameQuantityAndPrice =
-          newQuantity == current.quantity && newPrice == current.unitPriceSnapshot;
+      final newOvertime = overtime ?? current.overtime;
+      final newOvertimePrice =
+          overtimePriceTenThousandth ?? current.overtimePriceSnapshot;
+      if (newOvertime && newOvertimePrice <= 0) {
+        throw const ValidationFailure('加班单价必须大于 0');
+      }
+      final pricingPrice = newOvertime ? newOvertimePrice : newPrice;
+
+      // 只改备注时金额原样保留，避免历史分位在反复保存中漂移。
+      final sameQuantityAndPrice = newQuantity == current.quantity &&
+          newPrice == current.unitPriceSnapshot &&
+          newOvertime == current.overtime &&
+          newOvertimePrice == current.overtimePriceSnapshot;
+
       final updated = current.copyWith(
         date: newDate,
+        minuteOfDay: (minuteOfDay ?? current.minuteOfDay)
+            .clamp(0, Dates.minutesPerDay - 1),
         toyId: toyId,
         toyNameSnapshot: toyNameSnapshot,
         processSnapshot: processSnapshot,
         quantity: newQuantity,
         unitPriceSnapshot: newPrice,
+        overtime: newOvertime,
+        overtimePriceSnapshot: newOvertime ? newOvertimePrice : 0,
+        overtimeMultiplier: newOvertime
+            ? (overtimeMultiplier ?? current.overtimeMultiplier)
+            : 1000,
         remark: (remark ?? current.remark).trim(),
         subtotalCents: sameQuantityAndPrice
             ? current.subtotalCents
             : Money.subtotalCents(
                 quantity: newQuantity,
-                priceTenThousandth: newPrice,
+                priceTenThousandth: pricingPrice,
               ),
         updatedAt: AppClock.nowMillis(),
       );
@@ -265,7 +306,7 @@ class PieceRecordRepository {
       Tables.pieceRecords,
       where: where.join(' AND '),
       whereArgs: args,
-      orderBy: 'date DESC, created_at DESC',
+      orderBy: 'date DESC, minute_of_day DESC, created_at DESC',
     );
     return rows.map(PieceRecord.fromMap).toList(growable: false);
   }

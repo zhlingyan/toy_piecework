@@ -324,11 +324,19 @@ class _SettlementPageState extends State<SettlementPage> {
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(
-                Money.formatCents(net),
-                style: theme.textTheme.displaySmall?.copyWith(
-                  color: net < 0 ? AppTheme.danger : AppTheme.primary,
-                  fontWeight: FontWeight.w800,
+              // 金额位数多 + 超大字号时，宁可等比缩小也不许溢出
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    Money.formatCents(net),
+                    maxLines: 1,
+                    style: theme.textTheme.displaySmall?.copyWith(
+                      color: net < 0 ? AppTheme.danger : AppTheme.primary,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(width: 6),
@@ -418,10 +426,16 @@ class _SettlementPageState extends State<SettlementPage> {
                 children: [
                   Row(
                     children: [
-                      Text(
-                        worker.workerName,
-                        style: theme.textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                      // 姓名可能很长（如「张三（临时工）」），
+                      // 大字模式下必须允许收缩，否则会把「已停用」标签挤出屏幕
+                      Flexible(
+                        child: Text(
+                          worker.workerName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
                       ),
                       if (worker.isArchived) ...[
                         const SizedBox(width: 6),

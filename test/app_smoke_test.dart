@@ -95,6 +95,16 @@ void main() {
     // 设置
     selection.tabIndex = 3;
     await settle(tester);
+    // 字号与加班分区置于顶部，进页面即可操作
+    expect(find.text('显示与字号'), findsOneWidget);
+    expect(find.text('加班'), findsWidgets);
+    // 档案管理在首屏之下，需要滚动才能触达
+    await tester.dragUntilVisible(
+      find.text('档案管理'),
+      find.byType(ListView).last,
+      const Offset(0, -200),
+    );
+    await settle(tester);
     expect(find.text('档案管理'), findsOneWidget);
 
     // 卸载页面后再关库，避免页面在库关闭后还在查询

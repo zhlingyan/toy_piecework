@@ -1,10 +1,12 @@
 import '../../core/constants.dart';
 import '../../core/dates.dart';
 
-/// 结算分组：严格按 (toy_id, process_snapshot, unit_price_snapshot) 聚合。
+/// 结算分组：严格按 (toy_id, process, 正常单价, 是否加班, 加班单价) 聚合。
 ///
-/// 同一工序中途调价（0.20 元 100 件 + 0.25 元 100 件）必然拆成两行，
-/// 避免出现「平均单价」这类会造成分位误差的算法。
+/// 两条铁律：
+/// * 同一工序中途调价（0.20 元 100 件 + 0.25 元 100 件）必然拆成两行，
+///   避免出现「平均单价」这类会造成分位误差的算法；
+/// * 加班与正常班必须拆行，否则两者的件数会被合并、金额按同一单价算错。
 class PieceGroup {
   const PieceGroup({
     required this.toyId,
@@ -13,14 +15,46 @@ class PieceGroup {
     required this.unitPriceTenThousandth,
     required this.quantity,
     required this.subtotalCents,
+    this.overtime = false,
+    this.overtimePriceTenThousandth = 0,
+    this.overtimeMultiplier = 1000,
   });
 
   final String toyId;
   final String toyName;
   final String process;
+
+  /// 正常班单价快照。
   final int unitPriceTenThousandth;
   final int quantity;
   final int subtotalCents;
+
+  /// 是否加班行。
+  final bool overtime;
+
+  /// 加班单价快照（未加班为 0）。
+  final int overtimePriceTenThousandth;
+
+  /// 加班倍率，千分比。
+  final int overtimeMultiplier;
+
+  /// 本行实际计价的单价。
+  int get pricingPriceTenThousandth =>
+      overtime && overtimePriceTenThousandth > 0
+          ? overtimePriceTenThousandth
+          : unitPriceTenThousandth;
+
+  /// 行标签后缀，例如 `加班 ×1.5`；正常班为空串。
+  String get overtimeSuffix {
+    if (!overtime) return '';
+    final m = overtimeMultiplier;
+    final whole = m ~/ 1000;
+    var frac = (m % 1000).toString().padLeft(3, '0');
+    while (frac.length > 1 && frac.endsWith('0')) {
+      frac = frac.substring(0, frac.length - 1);
+    }
+    return '加班 ×$whole.$frac';
+  }
 }
 
 /// 单个工人在某区间的结算结果。

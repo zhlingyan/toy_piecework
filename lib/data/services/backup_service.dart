@@ -275,6 +275,8 @@ class BackupService {
               ? row['process'] as String
               : Defaults.defaultProcess,
           'unit_price_ten_thousandth': priceValue,
+          'overtime_price_ten_thousandth':
+              (row['overtime_price_ten_thousandth'] as num?)?.toInt() ?? 0,
           'pinyin_initials': row['pinyin_initials']?.toString() ?? '',
           'is_archived': (row['is_archived'] as num?)?.toInt() ?? 0,
           'created_at': requireInt('created_at'),
@@ -302,6 +304,14 @@ class BackupService {
           'unit_price_snapshot': requireInt('unit_price_snapshot'),
           'quantity': quantity,
           'subtotal_cents': requireInt('subtotal_cents'),
+          // v1 备份没有这几个字段，一律按「非加班、时间未知」补齐，
+          // 金额不受影响（subtotal_cents 原样保留）。
+          'minute_of_day': (row['minute_of_day'] as num?)?.toInt() ?? 0,
+          'overtime': (row['overtime'] as num?)?.toInt() ?? 0,
+          'overtime_price_snapshot':
+              (row['overtime_price_snapshot'] as num?)?.toInt() ?? 0,
+          'overtime_multiplier':
+              (row['overtime_multiplier'] as num?)?.toInt() ?? 1000,
           'remark': row['remark']?.toString() ?? '',
           'deleted_at': (row['deleted_at'] as num?)?.toInt(),
           'created_at': requireInt('created_at'),
@@ -327,6 +337,7 @@ class BackupService {
           'worker_name_snapshot': requireString('worker_name_snapshot'),
           'type': type,
           'amount_cents': amount,
+          'minute_of_day': (row['minute_of_day'] as num?)?.toInt() ?? 0,
           'remark': requireString('remark', allowEmpty: false),
           'deleted_at': (row['deleted_at'] as num?)?.toInt(),
           'created_at': requireInt('created_at'),
