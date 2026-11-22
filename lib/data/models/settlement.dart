@@ -172,7 +172,10 @@ class SettlementResult {
   /// 按计件额倒序、再按姓名排序。
   final List<WorkerSettlement> workers;
 
-  /// 参与结算的流水笔数（不含已删除）。
+  /// 参与结算的账目**总笔数**：计件 + 补贴/计时/扣款/预支（不含已删除）。
+  ///
+  /// 与 [totalRecordCount] 完全同源，保证汇总卡「总笔数」和
+  /// 「已结笔数 X/Y」的分母一致，不再出现「笔数 16 / 已结 20/20」。
   final int recordCount;
 
   int get totalPieceCents =>
@@ -201,11 +204,16 @@ class SettlementResult {
       workers.where((w) => !w.isFullySettled).length;
 
   /// 已结算笔数 / 总笔数：给「逐笔结算」提供进度感。
-  int get settledRecordCount =>
-      workers.fold(0, (sum, w) => sum + w.settledCount);
+  ///
+  /// 上限钳到 [recordCount]，即便将来聚合 SQL 改出意外也不会出现
+  /// 分子大于分母（如 20/16）这种反逻辑数字。
+  int get settledRecordCount {
+    final settled = workers.fold(0, (sum, w) => sum + w.settledCount);
+    return settled > recordCount ? recordCount : settled;
+  }
 
-  int get totalRecordCount =>
-      workers.fold(0, (sum, w) => sum + w.recordCount);
+  /// 分母直接取 [recordCount]，与汇总卡「总笔数」同一个数。
+  int get totalRecordCount => recordCount;
 
   /// 按状态筛人；`null` = 全部。
   ///
@@ -227,6 +235,34 @@ class SettlementResult {
   bool get isEmpty => workers.isEmpty;
 }
 
+/// 概览页「今日出勤名单」中的一行。
+///
+/// 口径：
+/// * [present] = 当天有计件或调整项（含仅有补贴/扣款也算到岗记过账）；
+/// * [recordCount] = 当日计件笔数 + 调整项笔数；
+/// * [netCents] = 当日净额（计件 + 补贴 + 计时 - 扣款 - 预支），可能为负。
+class AttendancePerson {
+  const AttendancePerson({
+    required this.workerId,
+    required this.name,
+    required this.code,
+    required this.isArchived,
+    required this.present,
+    required this.recordCount,
+    required this.netCents,
+  });
+
+  final String workerId;
+  final String name;
+  final String code;
+  final bool isArchived;
+  final bool present;
+  final int recordCount;
+  final int netCents;
+
+  String get displayName => code.isEmpty ? name : '$name（$code）';
+}
+
 /// 概览页统计。
 class DayOverview {
   const DayOverview({
@@ -235,6 +271,8 @@ class DayOverview {
     required this.workerCount,
     required this.pieceCents,
     required this.adjustmentCount,
+    this.totalWorkerCount = 0,
+    this.people = const [],
   });
 
   final String date;
@@ -247,4 +285,20 @@ class DayOverview {
   final int pieceCents;
 
   final int adjustmentCount;
+
+  /// 总人数：**全部在职工人** + 当日有账的已停用工人。
+  ///
+  /// 把「当日有账的已停用工人」并进来，是为了保证
+  /// `workerCount <= totalWorkerCount`，不会出现「3/0」这种反逻辑展示。
+  /// 完全没有工人档案时安全展示 `0/0`。
+  final int totalWorkerCount;
+
+  /// 完整名单（已出勤排前、未出勤置后），供点击卡片弹出的名单面板使用。
+  final List<AttendancePerson> people;
+
+  /// 「出勤人数 / 总人数」展示文本，如 `3/20`。
+  String get attendanceLabel => '$workerCount/$totalWorkerCount';
+
+  int get presentCount => people.where((p) => p.present).length;
+  int get absentCount => people.where((p) => !p.present).length;
 }

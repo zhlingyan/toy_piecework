@@ -8,6 +8,7 @@ import '../../core/id_gen.dart';
 import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/piece_record.dart';
+import '../../data/models/settlement_state.dart';
 import '../../data/models/toy.dart';
 import '../../data/models/worker.dart';
 import '../../domain/holidays/cn_holidays.dart';
@@ -64,8 +65,12 @@ class _CountPageState extends State<CountPage> {
   /// 真正入账的是流水自己的单价快照，档案怎么变都不会改历史。
   Map<String, int> _basePrices = const {};
 
-  /// 当天所在月份里「整月已标记结算」的工人，给流水行打结算标签用。
-  Set<String> _settledWorkers = const {};
+  /// 全库结算状态快照（逐笔 `settled_at` + 整月 `workerId|month` 标记）。
+  ///
+  /// 与结算页聚合 SQL 同源，由 `SettlementMarkRepository.loadState()` 一次读出。
+  /// 之前这里存的是「该月已结算的工人 id 集合」，却被当成「月份集合」传给
+  /// `PieceRecord.isSettled`，导致整月结算在计数页永远显示未结算。
+  SettlementState _settlementState = SettlementState.empty;
 
   /// 工人 id → 工号。流水只存了姓名快照，按工号查找要靠档案补。
   Map<String, String> _workerCodes = const {};
@@ -186,9 +191,9 @@ class _CountPageState extends State<CountPage> {
     final locked = Dates.isValidYmd(date)
         ? await services.months.isLocked(Dates.ymOfYmd(date))
         : false;
-    final settledWorkers = Dates.isValidYmd(date)
-        ? await services.settlementMarks.settledWorkersInMonth(Dates.ymOfYmd(date))
-        : const <String>{};
+    // 结算状态取全库统一快照：整月标记 + 逐笔 settled_at 都在里面。
+    // 结算页一标记，这里切页或收到 AppRefresh 就能同步，不再各读各的。
+    final settlementState = await services.settlementMarks.loadState();
     if (!mounted) return;
     setState(() {
       _workers = workers;
@@ -201,7 +206,7 @@ class _CountPageState extends State<CountPage> {
       };
       _records = records;
       _adjustments = adjustments;
-      _settledWorkers = settledWorkers;
+      _settlementState = settlementState;
       _locked = locked;
       _loading = false;
       _syncOvertimeAuto(notify: false);
@@ -953,7 +958,7 @@ class _CountPageState extends State<CountPage> {
                         ),
                       ),
                       SettlementBadge(
-                        adjustment.isSettled(_settledWorkers)
+                        _settlementState.isAdjustmentSettled(adjustment)
                             ? SettlementStatus.settled
                             : SettlementStatus.unsettled,
                         compact: true,
@@ -1531,7 +1536,7 @@ class _CountPageState extends State<CountPage> {
       recordUnitPrice: record.unitPriceSnapshot,
       baseUnitPrice: _basePrices[record.toyId] ?? 0,
     );
-    final settled = record.isSettled(_settledWorkers);
+    final settled = _settlementState.isPieceSettled(record);
     final name = '${record.workerNameSnapshot} · ${record.toyNameSnapshot}'
         '${record.processSnapshot == Defaults.defaultProcess ? '' : ' / ${record.processSnapshot}'}';
 

@@ -7,6 +7,7 @@ import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/settlement.dart';
+import '../../data/models/settlement_state.dart';
 import '../../data/models/settlement_event.dart';
 import '../../data/models/worker.dart';
 import '../../domain/rules/backfill_rules.dart';
@@ -69,6 +70,9 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
 
   /// 玩具档案的当前单价：用来判断某行是不是「临时调价」。
   Map<String, int> _basePrices = const {};
+
+  /// 统一结算状态快照：调整项行的「已结/未结」与计数页、结算页同源。
+  SettlementState _settlementState = SettlementState.empty;
   bool _loading = true;
   bool _locked = false;
   bool _buildingPayslip = false;
@@ -99,9 +103,12 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
         .listForWorker(widget.worker.workerId, limit: 1);
     final count = await widget.services.settlementHistory
         .countForWorker(widget.worker.workerId);
+    final settlementState =
+        await widget.services.settlementMarks.loadState();
     if (!mounted) return;
     setState(() {
       _adjustments = adjustments;
+      _settlementState = settlementState;
       // 该人本期可能一笔都没有（比如刚被删空），此时保留外部快照
       _worker = fresh.workers.isEmpty ? widget.worker : fresh.workers.first;
       _basePrices = {for (final toy in toys) toy.id: toy.unitPriceTenThousandth};
@@ -688,7 +695,7 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                           compact: true,
                         ),
                       SettlementBadge(
-                        adjustment.isSettled(_worker.settledMonths)
+                        _settlementState.isAdjustmentSettled(adjustment)
                             ? SettlementStatus.settled
                             : SettlementStatus.unsettled,
                         compact: true,

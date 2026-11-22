@@ -89,6 +89,7 @@ class StatBlock extends StatelessWidget {
     this.unit,
     this.color,
     this.icon,
+    this.onTap,
   });
 
   final String label;
@@ -97,15 +98,19 @@ class StatBlock extends StatelessWidget {
   final Color? color;
   final IconData? icon;
 
+  /// 给了就变成可点击卡片（如水波纹 + 右侧箭头），用于下钻名单。
+  final VoidCallback? onTap;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final accent = color ?? AppTheme.primary;
-    return Container(
+    final radius = BorderRadius.circular(16);
+    final card = Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       decoration: BoxDecoration(
         color: accent.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: radius,
         border: Border.all(color: accent.withValues(alpha: 0.18)),
       ),
       child: Column(
@@ -117,13 +122,17 @@ class StatBlock extends StatelessWidget {
                 Icon(icon, size: 18, color: accent),
                 const SizedBox(width: 6),
               ],
-              Text(
-                label,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: AppTheme.muted,
-                  fontWeight: FontWeight.w600,
+              Expanded(
+                child: Text(
+                  label,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: AppTheme.muted,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
+              if (onTap != null)
+                Icon(Icons.chevron_right, size: 18, color: accent),
             ],
           ),
           const SizedBox(height: 10),
@@ -155,6 +164,19 @@ class StatBlock extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+    if (onTap == null) return card;
+    // 水波纹必须由 Material 提供：Container 自带底色会遮住 InkWell 的涟漪，
+    // 所以外层用透明 Material，底色留在内层 Container。
+    return Material(
+      color: Colors.transparent,
+      borderRadius: radius,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: radius,
+        child: card,
       ),
     );
   }

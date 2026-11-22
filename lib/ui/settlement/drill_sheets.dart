@@ -7,6 +7,7 @@ import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/settlement.dart';
+import '../../data/models/settlement_state.dart';
 import '../../domain/pinyin/pinyin_helper.dart';
 import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
@@ -662,6 +663,9 @@ class _CategoryDrillSheetState extends State<_CategoryDrillSheet> {
     final info = <String, WorkerSettlement>{
       for (final worker in result.workers) worker.workerId: worker,
     };
+    // 逐笔结算状态统一走全库快照，不再各读各的月份集合
+    final SettlementState settlementState =
+        await services.settlementMarks.loadState();
 
     final entries = <String, List<_DrillEntry>>{};
     final fallbackNames = <String, String>{};
@@ -670,8 +674,6 @@ class _CategoryDrillSheetState extends State<_CategoryDrillSheet> {
       final records = await services.records.listRange(range);
       for (final record in records) {
         fallbackNames[record.workerId] = record.workerNameSnapshot;
-        final settledMonths =
-            info[record.workerId]?.settledMonths ?? const <String>{};
         entries.putIfAbsent(record.workerId, () => []).add(
               _DrillEntry(
                 id: record.id,
@@ -685,7 +687,7 @@ class _CategoryDrillSheetState extends State<_CategoryDrillSheet> {
                 subtitle: '${record.quantity} 件 × ${record.pricingPriceLabel}'
                     '${record.remark.isEmpty ? '' : ' · ${record.remark}'}',
                 signedCents: record.subtotalCents,
-                settled: record.isSettled(settledMonths),
+                settled: settlementState.isPieceSettled(record),
               ),
             );
       }
@@ -695,8 +697,6 @@ class _CategoryDrillSheetState extends State<_CategoryDrillSheet> {
       for (final adjustment in adjustments) {
         if (adjustment.type != type) continue;
         fallbackNames[adjustment.workerId] = adjustment.workerNameSnapshot;
-        final settledMonths =
-            info[adjustment.workerId]?.settledMonths ?? const <String>{};
         entries.putIfAbsent(adjustment.workerId, () => []).add(
               _DrillEntry(
                 id: adjustment.id,
@@ -709,7 +709,7 @@ class _CategoryDrillSheetState extends State<_CategoryDrillSheet> {
                     : adjustment.summaryLabel,
                 subtitle: '',
                 signedCents: adjustment.signedCents,
-                settled: adjustment.isSettled(settledMonths),
+                settled: settlementState.isAdjustmentSettled(adjustment),
                 adjustment: adjustment,
               ),
             );

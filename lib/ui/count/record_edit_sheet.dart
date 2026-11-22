@@ -4,6 +4,7 @@ import '../../core/dates.dart';
 import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/piece_record.dart';
+import '../../data/models/settlement_state.dart';
 import '../../data/models/toy.dart';
 import '../../domain/holidays/cn_holidays.dart';
 import '../../domain/rules/overtime_rules.dart';
@@ -97,10 +98,13 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
   }
 
   Future<void> _loadSettleState() async {
-    final months = await widget.services.settlementMarks
-        .settledMonthsFor(widget.record.workerId);
+    final SettlementState state =
+        await widget.services.settlementMarks.loadState();
     if (!mounted) return;
-    final marked = months.contains(Dates.ymOfYmd(widget.record.date));
+    final marked = state.isMarkSettled(
+      widget.record.workerId,
+      Dates.ymOfYmd(widget.record.date),
+    );
     setState(() {
       _monthSettled = marked;
       if (marked) _settled = true;

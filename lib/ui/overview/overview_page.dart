@@ -9,6 +9,7 @@ import '../../services/app_services.dart';
 import '../../state/selection_scope.dart';
 import '../common/ui_kit.dart';
 import '../theme.dart';
+import 'attendance_sheet.dart';
 
 /// 概览：当日笔数、出勤人数、计件总额 + 最近流水。
 class OverviewPage extends StatefulWidget {
@@ -98,10 +99,22 @@ class _OverviewPageState extends State<OverviewPage> {
                 Expanded(
                   child: StatBlock(
                     label: '出勤人数',
-                    value: '${overview?.workerCount ?? 0}',
+                    // 出勤 / 总人数；总人数为 0 时安全展示 0/0。
+                    value: overview?.attendanceLabel ?? '0/0',
                     unit: '人',
                     icon: Icons.groups_outlined,
                     color: AppTheme.success,
+                    onTap: () => showAttendanceSheet(
+                      context: context,
+                      overview: overview ??
+                          DayOverview(
+                            date: today,
+                            recordCount: 0,
+                            workerCount: 0,
+                            pieceCents: 0,
+                            adjustmentCount: 0,
+                          ),
+                    ),
                   ),
                 ),
               ],
@@ -149,24 +162,25 @@ class _OverviewPageState extends State<OverviewPage> {
               child: Row(
                 children: [
                   Expanded(
-                    child: FilledButton.icon(
+                    child: _QuickActionButton(
+                      label: '马上计数',
+                      icon: Icons.add,
+                      primary: true,
                       onPressed: () {
                         final target = selection;
                         if (target != null) target.tabIndex = 1;
                       },
-                      icon: const Icon(Icons.add),
-                      label: const Text('马上计数'),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: OutlinedButton.icon(
+                    child: _QuickActionButton(
+                      label: '去结算',
+                      icon: Icons.receipt_long_outlined,
                       onPressed: () {
                         final target = selection;
                         if (target != null) target.tabIndex = 2;
                       },
-                      icon: const Icon(Icons.receipt_long_outlined),
-                      label: const Text('去结算'),
                     ),
                   ),
                 ],
@@ -245,6 +259,98 @@ class _OverviewPageState extends State<OverviewPage> {
                         ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 快捷操作按钮：图标与文字强制同一行，杜绝「马上计 / 数」折行。
+///
+/// 之前用 `FilledButton.icon`，label 在两列窄卡片里会被挤成两行；
+/// 这里改成固定高度 + `FittedBox(scaleDown)` + `maxLines: 1`，
+/// 字号再大也只会整体缩小、绝不换行。主按钮加渐变与阴影拉开层次，
+/// 次按钮与主按钮同高、同圆角、同字重，视觉成一套。
+class _QuickActionButton extends StatelessWidget {
+  const _QuickActionButton({
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+    this.primary = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onPressed;
+  final bool primary;
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(16);
+    final foreground = primary ? Colors.white : AppTheme.primary;
+    return Container(
+      height: 58,
+      decoration: BoxDecoration(
+        gradient: primary
+            ? const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF1D64B4), Color(0xFF0F3F78)],
+              )
+            : null,
+        color: primary ? null : AppTheme.surface,
+        borderRadius: radius,
+        border: primary
+            ? null
+            : Border.all(
+                color: AppTheme.primary.withValues(alpha: 0.35),
+                width: 1.5,
+              ),
+        boxShadow: primary
+            ? const [
+                BoxShadow(
+                  color: Color(0x3314549B),
+                  blurRadius: 10,
+                  offset: Offset(0, 4),
+                ),
+              ]
+            : null,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: radius,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: radius,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 22, color: foreground),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.center,
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      softWrap: false,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                        color: foreground,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

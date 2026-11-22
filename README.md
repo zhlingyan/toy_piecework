@@ -6,7 +6,7 @@
 - 技术栈：Flutter 3.50 / Dart 3.14，本地 SQLite（`sqflite`）
 - 目标平台：Android 7.0+（minSdk 24），单 APK 直接安装
 - 金额精度：单价按「万分之一元」整数存储，小计按「分」整数存储，**逐笔四舍五入后累加**
-- 测试：269 条自动化测试（核心金额/锁账/逐笔结算/单价隔离/日期归集/节假日/查找分页/全员下钻/自然序排序/变更留痕/打印隔离/回收站/备份/导入逻辑 + 界面冒烟与超大字号排版）
+- 测试：279 条自动化测试（核心金额/锁账/逐笔结算/单价隔离/日期归集/节假日/查找分页/全员下钻/自然序排序/变更留痕/打印隔离/状态同步/笔数口径/出勤名单/回收站/备份/导入逻辑 + 界面冒烟与超大字号排版）
 
 ---
 
@@ -251,6 +251,88 @@ Android 会杀后台任务，定时器既不可靠又费电。云端只保留最
 `stripAuditMetadata`（剔除时间戳、取消理由、变更历史、`#N` 标识），
 双保险保证总表只有正式结算汇总。工资条与年度报告同样不含审计字段。
 
+### 22. 结算状态只有一个判定口径：`SettlementState`
+
+v1.8 之前，同一个「这笔结算了吗」有四种算法，结果互相打架：
+
+| 页面 | 判定方式 | 隐患 |
+| --- | --- | --- |
+| 计数页 | `settledWorkersInMonth(月)` → 工人 id 集合，传给要求**月份集合**的 `isSettled` | 参数语义错配，整月标记恒不命中 |
+| 明细页 | 单人 `settledMonthsFor(workerId)` | 口径对，但要多查一次 |
+| 工人详情 | `WorkerSettlement.settledMonths` | 依赖聚合结果，弹层不复算就过期 |
+| 下钻面板 | 同上，缺人时退化空集 | 静默变成「全部未结」 |
+
+`count_page.dart` 那处最关键：`settledWorkersInMonth` 返回的是「这个月**哪些人**结过」，
+`isSettled(Set<String> settledMonths)` 要的是「这个人**哪些月**结过」。
+拿工人 id 去 `contains('2026-11')` 永远为 false —— 于是结算页金额已经变了，
+计数页流水还挂着「未结算」。
+
+现在统一为 `SettlementState`：
+
+```dart
+bool isSettled({required String workerId, required String workDate, required int? settledAt}) =>
+    settledAt != null                                   // 逐笔结算
+    || settledMarkKeys.contains(SettlementMark.keyOf(workerId, Dates.ymOfYmd(workDate)));
+```
+
+- 唯一数据入口 `SettlementMarkRepository.loadState()`：一次查出全库 `is_settled = 1` 的
+  `workerId|month` 组合键，包成不可变快照；
+- 计数页 / 明细页 / 工人详情 / 下钻面板 / 编辑弹层全部调 `isPieceSettled` /
+  `isAdjustmentSettled`，不再各自拼集合；
+- 页面挂在 `AppScope`（`InheritedNotifier<AppRefresh>`）下，结算操作
+  `notifyDataChanged()` → `didChangeDependencies` 比对 `refresh.version` → 重载，
+  跨页实时同步，不靠缓存。
+- `settledWorkersInMonth` 保留但加了注释：只做「本月有哪些人结过」统计，
+  **禁止**再传给 `isSettled`。
+
+### 23. 「笔数」必须是「已结笔数」的分母
+
+v1.7 的汇总卡曾同时出现「笔数 16」与「已结笔数 20/20」，因为两个数不同源：
+
+- `recordCount` 是一条 `COUNT(*) FROM piece_records` —— 只算计件；
+- `settledRecordCount / totalRecordCount` 来自 `entryCountByWorker` —— 计件 **+** 补贴/计时/扣款/预支。
+
+同一屏上分子分母口径不同，数字就必然反逻辑。现在：
+
+```dart
+// 逐笔聚合时顺手把总笔数累出来，与分子同源
+final recordCount = entryCountByWorker.values.fold(0, (s, c) => s + c);
+
+/// 分母直接取 recordCount；分子钳到分母，杜绝 20/16
+int get settledRecordCount {
+  final settled = workers.fold(0, (sum, w) => sum + w.settledCount);
+  return settled > recordCount ? recordCount : settled;
+}
+int get totalRecordCount => recordCount;
+```
+
+钳位是**防御性**的：即便将来聚合 SQL 再改出偏差，界面上也不会出现
+「已结 20 / 共 16」这种一眼假的数据；同时 `settledRecordCount <= recordCount`
+被测试钉死，口径一歪立刻红。
+
+### 24. 出勤名单：总人数的分母要让恒等式成立
+
+「出勤人数」原来只显示 `3 人`，点了没反应。现在展示 `出勤/总人数`，
+点开是全员名单（已出勤高亮带当日笔数/净额，未出勤置灰）。
+
+口径的坑在**分母**：只数「在职工人」的话，某位已停用工人当天还有补录的账，
+就会出现「出勤 3 / 总 2」这种反逻辑。所以：
+
+- 出勤 = 当天有计件或有调整项的**去重工人**（只有补贴也算到岗记过账）；
+- 总人数 = 全部在职工人 **+ 当日有账的已停用工人** —— 保证 `出勤 ≤ 总人数` 恒成立；
+- 完全没有档案时安全展示 `0/0`，名单走空态而不是弹一个空白列表。
+
+净额按 `AdjustmentType.sign` 计入（扣款、预支为负），所以可能是负数，
+展示层照实显示，不做 `abs()` 掩盖。
+
+### 25. 快捷按钮不用 `Button.icon`
+
+`FilledButton.icon` 的 label 在「两列等分 + 中文四个字 + 大字号」下会折成
+「马上计 / 数」。`_QuickActionButton` 改成固定高度 58 + `Row(mainAxisSize.min)` +
+`FittedBox(scaleDown)` + `maxLines: 1 / softWrap: false`：
+字号放大到 2 倍只会整体缩小，**永不换行**。主按钮用渐变 + 投影，
+次按钮同高同圆角、描边 1.5px，两个摆一起是一套。
+
 ---
 
 ## 四、验收用例（已自动化覆盖）
@@ -285,6 +367,10 @@ Android 会杀后台任务，定时器既不可靠又费电。云端只保留最
 | 取消理由选填、留空可完成、当前状态标识与历史面板时间不覆盖 | `test/cancel_reason_ui_test.dart` |
 | 每次结算 / 取消追加历史、时间戳不覆盖、备份 v6 可恢复、老备份降级 | `test/settlement_history_test.dart` |
 | 打印总表 12 列白名单与审计清洗；v5→v6 迁移不动金额 | `test/csv_audit_filter_test.dart`、`test/migration_test.dart` |
+| 结算页标记 → 计数页/明细/下钻全部同步为已结算；取消后同步回未结算 | `test/settlement_state_sync_test.dart` |
+| 笔数 == 已结笔数分母；`settledRecordCount <= recordCount` 恒成立 | `test/settlement_state_sync_test.dart` |
+| 出勤 2/3 展示、名单已出勤高亮/未出勤置灰、0 人空态 | `test/overview_attendance_ui_test.dart` |
+| 「马上计数」图标与文字同一行，2 倍字号不折行不溢出 | `test/overview_attendance_ui_test.dart` |
 
 ---
 

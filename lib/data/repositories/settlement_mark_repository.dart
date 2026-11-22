@@ -6,6 +6,7 @@ import '../../core/dates.dart';
 import '../../core/failures.dart';
 import '../db/app_database.dart';
 import '../models/settlement_mark.dart';
+import '../models/settlement_state.dart';
 
 /// 结算状态仓储：按「工人 + 月份」记已结算/未结算。
 ///
@@ -146,7 +147,35 @@ class SettlementMarkRepository {
     });
   }
 
-  /// 某月已标记结算的工人 id 集合（计数页给流水行打结算标签用）。
+  /// **统一结算状态快照**：读取全库所有 `is_settled = 1` 的
+  /// `workerId|month` 组合键，供所有页面共用同一份判定口径。
+  ///
+  /// 之前计数页用 [settledWorkersInMonth]（返回工人 id 集合）去调
+  /// `PieceRecord.isSettled`（要求月份集合），参数语义错配导致整月结算
+  /// 在计数页永远不生效；明细页 / 下钻页又各自查单人月份集合，口径分叉。
+  /// 现在一律走这里，配合 `SettlementState.isPieceSettled` /
+  /// `isAdjustmentSettled` 判定，保证「结算页标记 → 计数页立刻同步」。
+  Future<SettlementState> loadState({DatabaseExecutor? ex}) async {
+    final executor = ex ?? _db.raw;
+    final rows = await executor.query(
+      Tables.settlementMarks,
+      columns: ['worker_id', 'month'],
+      where: 'is_settled = 1',
+    );
+    return SettlementState({
+      for (final row in rows)
+        SettlementMark.keyOf(
+          row['worker_id']! as String,
+          row['month']! as String,
+        ),
+    });
+  }
+
+  /// 某月已标记结算的工人 id 集合。
+  ///
+  /// 注意：返回的是**工人 id**，不是月份；仅用于「这个月有哪些人结过」这类
+  /// 统计，不要再传给 `PieceRecord.isSettled` / `Adjustment.isSettled`。
+  /// 流水行的结算判定统一用 [loadState]。
   Future<Set<String>> settledWorkersInMonth(
     String month, {
     DatabaseExecutor? ex,

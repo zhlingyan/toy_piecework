@@ -229,6 +229,9 @@ class _SettlementPageState extends State<SettlementPage> {
       worker: worker,
       range: _range,
     );
+    if (!mounted) return;
+    // 弹层里可能改了结算状态：广播一次，让计数页/明细页立刻同步。
+    services.notifyDataChanged();
     await _load();
   }
 
@@ -256,6 +259,7 @@ class _SettlementPageState extends State<SettlementPage> {
       status: status,
     );
     if (!mounted) return;
+    AppScope.read(context).notifyDataChanged();
     await _load();
   }
 
@@ -282,6 +286,7 @@ class _SettlementPageState extends State<SettlementPage> {
       type: type,
     );
     if (!mounted) return;
+    AppScope.read(context).notifyDataChanged();
     await _load();
   }
 
@@ -616,7 +621,8 @@ class _SettlementPageState extends State<SettlementPage> {
                 _miniStat('预支', Money.formatCents(result?.advanceTotal ?? 0),
                     key: const ValueKey('summary-metric-advance'),
                     onTap: () => _openCategoryDrill(AdjustmentType.advance)),
-                _miniStat('笔数', '${result?.recordCount ?? 0}'),
+                _miniStat('总笔数', '${result?.totalRecordCount ?? 0}',
+                    key: const ValueKey('summary-metric-total-count')),
                 _miniStat(
                   '已结笔数',
                   '${result?.settledRecordCount ?? 0}/'
@@ -627,7 +633,8 @@ class _SettlementPageState extends State<SettlementPage> {
             const SizedBox(height: 6),
             const MutedText(
               '点「计件 / 补贴 / 计时 / 扣款 / 预支」可按项目看全员：'
-              '谁有这一项、各多少、哪些还没结。',
+              '谁有这一项、各多少、哪些还没结。\n'
+              '总笔数 = 计件 + 补贴/计时/扣款/预支，已结笔数的分母与它一致。',
             ),
           ],
           const SizedBox(height: 12),

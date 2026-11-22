@@ -7,6 +7,7 @@ import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/piece_record.dart';
+import '../../data/models/settlement_state.dart';
 import '../../domain/holidays/cn_holidays.dart';
 import '../../domain/rules/backfill_rules.dart';
 import '../../domain/rules/price_rules.dart';
@@ -145,15 +146,14 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
       widget.range,
       workerId: widget.workerId,
     );
-    final settledMonths =
-        await services.settlementMarks.settledMonthsFor(widget.workerId);
+    final settlementState = await services.settlementMarks.loadState();
     final toys = await services.toys.listAll();
     if (!mounted) return;
     setState(() {
       _entries = _buildEntries(
         records,
         adjustments,
-        settledMonths,
+        settlementState,
         {for (final toy in toys) toy.id: toy.unitPriceTenThousandth},
       );
       _loading = false;
@@ -163,7 +163,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
   List<_DetailEntry> _buildEntries(
     List<PieceRecord> records,
     List<Adjustment> adjustments,
-    Set<String> settledMonths,
+    SettlementState settlementState,
     Map<String, int> basePrices,
   ) {
     final entries = <_DetailEntry>[
@@ -180,7 +180,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
           subtitle: '${record.quantity} 件 × ${record.pricingPriceLabel}'
               '${record.remark.isEmpty ? '' : ' · ${record.remark}'}',
           signedCents: record.subtotalCents,
-          settled: record.isSettled(settledMonths),
+          settled: settlementState.isPieceSettled(record),
           settledIndividually: record.settledIndividually,
           tag: record.overtime ? '加班 ×${record.overtimeMultiplierLabel}' : null,
           remark: record.remark,
@@ -199,7 +199,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
           title: adjustment.type.label,
           subtitle: adjustment.summaryLabel,
           signedCents: adjustment.signedCents,
-          settled: adjustment.isSettled(settledMonths),
+          settled: settlementState.isAdjustmentSettled(adjustment),
           settledIndividually: adjustment.settledIndividually,
           remark: adjustment.remark,
           isPiece: false,
