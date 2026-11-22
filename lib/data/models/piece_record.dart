@@ -1,3 +1,4 @@
+import '../../core/dates.dart';
 import '../../core/money.dart';
 
 /// 计件流水。姓名/玩具/工序/单价全部**强制快照**，
@@ -95,6 +96,18 @@ class PieceRecord {
   final int updatedAt;
 
   bool get isDeleted => deletedAt != null;
+
+  /// [date] 的显式别名：业务日期（"哪一天的活"）。
+  ///
+  /// 统计、结算、锁账只看它；[createdAt] 永远不参与归集。
+  /// 起这个名字是为了让调用处一眼分清两个时间字段。
+  String get workDate => date;
+
+  /// 录入时间（毫秒）所在的自然日，`YYYY-MM-DD`。
+  String get createdAtDate => Dates.ymdOfMillis(createdAt);
+
+  /// 录入时间，`YYYY-MM-DD HH:mm:ss`（审计展示用）。
+  String get createdAtLabel => Dates.formatMillis(createdAt);
 
   /// 真正参与金额计算的那一个单价。
   ///

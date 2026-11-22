@@ -1,12 +1,15 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/clock.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/settlement.dart';
+import '../../domain/rules/date_periods.dart';
 import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
 import '../../state/selection_state.dart';
 import '../common/export_sheet.dart';
+import '../common/range_picker_sheet.dart';
 import '../common/ui_kit.dart';
 import '../count/adjustment_sheet.dart';
 import '../reports/annual_page.dart';
@@ -30,7 +33,6 @@ class _SettlementPageState extends State<SettlementPage> {
   Set<String> _lockedMonths = const {};
   bool _loading = true;
   int _loadedVersion = -1;
-  int _rangePreset = 2; // 0 今日 1 近7天 2 本月 3 上月 4 自定义
 
   /// 结算状态筛选：null = 全部。
   SettlementStatus? _statusFilter;
@@ -38,7 +40,7 @@ class _SettlementPageState extends State<SettlementPage> {
   @override
   void initState() {
     super.initState();
-    _range = DateRange.thisMonth(DateTime.now());
+    _range = DatePeriods.defaultRange(AppClock.now());
   }
 
   @override
@@ -71,30 +73,24 @@ class _SettlementPageState extends State<SettlementPage> {
     return result.filterBy(_statusFilter);
   }
 
-  void _applyPreset(int preset) {
-    final now = DateTime.now();
-    DateRange range;
-    switch (preset) {
-      case 0:
-        range = DateRange.day(now);
-      case 1:
-        range = DateRange.last7Days(now);
-      case 2:
-        range = DateRange.thisMonth(now);
-      case 3:
-        range = DateRange.lastMonth(now);
-      default:
-        return;
+  /// 点开区间入口：弹出完整区间列表，选中立刻生效。
+  Future<void> _openRangePicker() async {
+    final pick = await showRangePickerSheet(
+      context: context,
+      current: _range,
+      now: AppClock.now(),
+    );
+    if (pick == null || !mounted) return;
+    if (pick.custom) {
+      await _pickCustomRange();
+      return;
     }
-    setState(() {
-      _rangePreset = preset;
-      _range = range;
-    });
+    setState(() => _range = pick.range);
     _load();
   }
 
   Future<void> _pickCustomRange() async {
-    final now = DateTime.now();
+    final now = AppClock.now();
     final picked = await showDateRangePicker(
       context: context,
       firstDate: DateTime(2018, 1, 1),
@@ -110,7 +106,6 @@ class _SettlementPageState extends State<SettlementPage> {
     );
     if (picked == null) return;
     setState(() {
-      _rangePreset = 4;
       _range = DateRange.of(Dates.ymd(picked.start), Dates.ymd(picked.end));
     });
     _load();
@@ -171,16 +166,24 @@ class _SettlementPageState extends State<SettlementPage> {
       showToast(context, '还没有工人档案，请先建档', isError: true);
       return;
     }
+    // 默认日期必须落在**当前区间内**：在"上个月"里补录补贴，
+    // 落到今天就会看不见（钱记到了下个月），这是最容易引起对账争议的坑。
     final saved = await showAdjustmentSheet(
       context: context,
       services: services,
-      defaultDate: Dates.ymd(DateTime.now()),
+      defaultDate: _defaultAdjustmentDate(),
       workers: workers,
     );
     if (saved == true) {
       services.notifyDataChanged();
       _load();
     }
+  }
+
+  /// 补录调整项的默认日期：今天在当前区间内就用今天，否则用区间最后一天。
+  String _defaultAdjustmentDate() {
+    final today = Dates.ymd(AppClock.now());
+    return _range.contains(today) ? today : _range.end;
   }
 
   Future<void> _exportCsv() async {
@@ -319,48 +322,84 @@ class _SettlementPageState extends State<SettlementPage> {
     );
   }
 
+  /// 区间入口：一个卡片，点开是完整列表（周 / 月 / 季度 / 半年 / 年 + 自定义）。
+  ///
+  /// 平铺十几个小圆片既挤又记不住口径，改成入口 + 列表后，
+  /// 每一项都能在选中前看到起止日期。
   Widget _buildRangeBar(ThemeData theme) {
-    final presets = ['今日', '近7天', '本月', '上月'];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Text('区间', style: theme.textTheme.titleMedium),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                _range.label,
-                style: theme.textTheme.bodyLarge?.copyWith(color: AppTheme.muted),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            TextButton.icon(
-              onPressed: _pickCustomRange,
-              icon: const Icon(Icons.date_range, size: 20),
-              label: const Text('自定义'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
+    final matched = DatePeriods.match(_range, AppClock.now());
+    return Material(
+      color: AppTheme.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: _openRangePicker,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE0E4EB)),
+          ),
           child: Row(
             children: [
-              for (var index = 0; index < presets.length; index++) ...[
-                ChoiceChip(
-                  label: Text(presets[index]),
-                  selected: _rangePreset == index,
-                  onSelected: (_) => _applyPreset(index),
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: AppTheme.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                const SizedBox(width: 8),
-              ],
-              if (_rangePreset == 4)
-                const ChoiceChip(label: Text('自定义'), selected: true, onSelected: null),
+                child: const Icon(
+                  Icons.calendar_month_outlined,
+                  color: AppTheme.primary,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 2,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          matched?.label ?? '自定义区间',
+                          style: theme.textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        if (matched?.note != null)
+                          Text(
+                            matched!.note!,
+                            style: theme.textTheme.bodySmall
+                                ?.copyWith(color: AppTheme.muted),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${_range.label} · ${_range.dayCount} 天',
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: AppTheme.muted),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '切换区间',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: AppTheme.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: AppTheme.primary),
             ],
           ),
         ),
-      ],
+      ),
     );
   }
 

@@ -6,9 +6,11 @@ import '../../core/dates.dart';
 import '../../core/failures.dart';
 import '../../core/id_gen.dart';
 import '../../core/money.dart';
+import '../../domain/holidays/cn_holidays.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/worker.dart';
 import '../../services/app_services.dart';
+import '../common/date_picker_sheet.dart';
 import '../common/picker.dart';
 import '../common/ui_kit.dart';
 import '../theme.dart';
@@ -326,6 +328,22 @@ class _AdjustmentSheetState extends State<_AdjustmentSheet> {
                 ),
               ],
             ),
+            if (CnHolidays.of(_date) != null) ...[
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  HolidayBadge(CnHolidays.of(_date)!, compact: true),
+                  MutedText('这笔调整项的日期'),
+                ],
+              ),
+            ],
+            if (_date.compareTo(Dates.ymd(AppClock.now())) < 0) ...[
+              const SizedBox(height: 6),
+              MutedText('今天录入，账算在 $_date（明细里会标「补录」）'),
+            ],
             const SizedBox(height: 16),
             Wrap(
               spacing: 10,

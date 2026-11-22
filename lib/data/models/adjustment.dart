@@ -1,4 +1,5 @@
 import '../../core/constants.dart';
+import '../../core/dates.dart';
 import '../../core/money.dart';
 
 /// 奖惩 / 计时 / 预支调整项。金额统一存正数，方向由 [AdjustmentType.sign] 决定。
@@ -38,6 +39,8 @@ class Adjustment {
   }
 
   final String id;
+
+  /// `YYYY-MM-DD`，业务日期：这笔调整项算哪一天的账。
   final String date;
   final String workerId;
   final String workerNameSnapshot;
@@ -64,6 +67,17 @@ class Adjustment {
 
   /// 是否按「工时 × 时薪」计价（而不是直接填一个金额）。
   bool get isByWorkTime => workMinutes > 0 && hourlyRateCents > 0;
+
+  /// [date] 的显式别名：业务日期（"这笔算哪一天的账"）。
+  ///
+  /// 与 [createdAt] 严格分开：改日期不会改录入时间，反之亦然。
+  String get workDate => date;
+
+  /// 录入时间（毫秒）所在的自然日，`YYYY-MM-DD`。
+  String get createdAtDate => Dates.ymdOfMillis(createdAt);
+
+  /// 录入时间，`YYYY-MM-DD HH:mm:ss`（审计展示用）。
+  String get createdAtLabel => Dates.formatMillis(createdAt);
 
   /// 计时明细，例：`3.5 小时 × 25.00 元/时`；其它类型返回空串。
   String get workTimeLabel {

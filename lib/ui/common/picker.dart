@@ -1,6 +1,5 @@
 import 'package:material_ui/material_ui.dart';
 
-import '../../core/dates.dart';
 import '../../domain/pinyin/pinyin_helper.dart';
 import '../theme.dart';
 
@@ -248,22 +247,3 @@ class _PickerSheetState<T> extends State<_PickerSheet<T>> {
   }
 }
 
-/// 选日期（默认今天）。返回 `YYYY-MM-DD`。
-Future<String?> pickRecordDate(
-  BuildContext context, {
-  required String initial,
-}) async {
-  final parsed = Dates.tryParseYmd(initial) ?? DateTime.now();
-  final picked = await showDatePicker(
-    context: context,
-    initialDate: parsed,
-    firstDate: DateTime(2018, 1, 1),
-    lastDate: DateTime.now().add(const Duration(days: 1)),
-    helpText: '选择记账日期',
-    cancelText: '取消',
-    confirmText: '确定',
-    fieldLabelText: '日期',
-  );
-  if (picked == null) return null;
-  return Dates.ymd(picked);
-}

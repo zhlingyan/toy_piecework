@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../domain/holidays/cn_holidays.dart';
 import '../../domain/rules/settlement_rules.dart';
 import '../theme.dart';
 
@@ -8,6 +9,7 @@ class SectionCard extends StatelessWidget {
   const SectionCard({
     super.key,
     this.title,
+    this.titleWidget,
     this.trailing,
     required this.child,
     this.padding = const EdgeInsets.all(16),
@@ -15,6 +17,9 @@ class SectionCard extends StatelessWidget {
   });
 
   final String? title;
+
+  /// 自定义标题（如「日期 + 假期角标」）。给了它就不用 [title]。
+  final Widget? titleWidget;
   final Widget? trailing;
   final Widget child;
   final EdgeInsets padding;
@@ -48,18 +53,19 @@ class SectionCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (title != null)
+              if (title != null || titleWidget != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: Row(
                     children: [
                       Expanded(
-                        child: Text(
-                          title!,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
+                        child: titleWidget ??
+                            Text(
+                              title ?? '',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
                       ),
                       ?trailing,
                     ],
@@ -354,6 +360,121 @@ class MutedText extends StatelessWidget {
             color: AppTheme.muted,
             height: 1.5,
           ),
+    );
+  }
+}
+
+/// 法定假期 / 调休补班角标。
+///
+/// 暖色 = 放假（和"加班"用同一种暖色，语义都是"这天不一样"），
+/// 蓝色 = 调休上班。故意做成两种颜色：车间里最容易搞错的是
+/// "周末要上班"的调休日，如果也涂成"休息色"就会误导排班。
+///
+/// 纯展示：不参与任何金额计算。
+class HolidayBadge extends StatelessWidget {
+  const HolidayBadge(
+    this.holiday, {
+    super.key,
+    this.compact = false,
+    this.showName = true,
+  });
+
+  final CnHoliday holiday;
+  final bool compact;
+  final bool showName;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = holiday.isHoliday ? AppTheme.warning : AppTheme.primary;
+    final text = holiday.isHoliday
+        ? (showName ? '${holiday.name} · 休' : '休')
+        : (showName ? '调休上班' : '班');
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 5 : 7,
+          vertical: compact ? 1 : 2,
+        ),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withValues(alpha: 0.28)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              holiday.isHoliday ? Icons.beach_access : Icons.work_outline,
+              size: compact ? 11 : 13,
+              color: color,
+            ),
+            const SizedBox(width: 3),
+            Text(
+              text,
+              maxLines: 1,
+              style: TextStyle(
+                fontSize: compact ? 11 : 12,
+                color: color,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 「补录」角标：今天录入、记到更早的业务日期。
+///
+/// 红色是刻意的——这是唯一一种会让人怀疑"账记错日子"的记录，
+/// 必须比加班/结算这些小标签更扎眼。
+class BackfillBadge extends StatelessWidget {
+  const BackfillBadge({super.key, this.daysEarlier, this.compact = false});
+
+  /// 提前了几天；为 null 时只显示「补录」。
+  final int? daysEarlier;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = daysEarlier == null ? '补录' : '补录 $daysEarlier 天';
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 5 : 7,
+          vertical: compact ? 1 : 2,
+        ),
+        decoration: BoxDecoration(
+          color: AppTheme.danger.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: AppTheme.danger.withValues(alpha: 0.35)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.history,
+              size: compact ? 11 : 13,
+              color: AppTheme.danger,
+            ),
+            const SizedBox(width: 3),
+            Text(
+              text,
+              maxLines: 1,
+              style: TextStyle(
+                fontSize: compact ? 11 : 12,
+                color: AppTheme.danger,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

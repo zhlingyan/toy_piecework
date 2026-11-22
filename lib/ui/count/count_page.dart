@@ -10,9 +10,12 @@ import '../../data/models/adjustment.dart';
 import '../../data/models/piece_record.dart';
 import '../../data/models/toy.dart';
 import '../../data/models/worker.dart';
+import '../../domain/holidays/cn_holidays.dart';
+import '../../domain/rules/backfill_rules.dart';
 import '../../domain/rules/overtime_rules.dart';
 import '../../services/app_services.dart';
 import '../../state/selection_state.dart';
+import '../common/date_picker_sheet.dart';
 import '../common/picker.dart';
 import '../common/ui_kit.dart';
 import '../theme.dart';
@@ -58,6 +61,9 @@ class _CountPageState extends State<CountPage> {
   int _loadedVersion = -1;
   String _loadedDate = '';
 
+  /// 上一次看到的页签下标，用来识别"刚进入计数页"。
+  late int _lastTabIndex = widget.selection.tabIndex;
+
   /// 点击保存时生成的固定主键：双击重复提交会被数据库主键冲突挡掉。
   String? _pendingRecordId;
 
@@ -79,6 +85,23 @@ class _CountPageState extends State<CountPage> {
 
   void _onSelectionChanged() {
     if (!mounted) return;
+    // 重新进入「马上计数」：时刻也要回到当下。
+    // 日期由 SelectionState.selectTab 负责重置（那里才知道"从哪切到哪"），
+    // 这里只管页面自己的瞬时状态，避免两边互相覆写。
+    final tab = widget.selection.tabIndex;
+    final entering = tab == SelectionState.countTabIndex &&
+        _lastTabIndex != SelectionState.countTabIndex;
+    _lastTabIndex = tab;
+    if (entering) {
+      setState(() {
+        _minuteOfDay = AppClock.nowMinuteOfDay();
+        // 重新进入后按当前时刻重新判断加班，不继承上次的手动选择
+        _overtimeManual = false;
+        _syncOvertimeAuto(notify: false);
+        // 上一笔记录的主键作废，避免和这次的补录撞车
+        _pendingRecordId = null;
+      });
+    }
     if (_loadedDate != widget.selection.date) {
       _reload();
     } else {
@@ -492,7 +515,7 @@ class _CountPageState extends State<CountPage> {
     final toy = _toy;
     final subtotal = _subtotal;
     final date = widget.selection.date;
-    final isToday = date == Dates.ymd(DateTime.now());
+    final isToday = date == SelectionState.today;
 
     return Scaffold(
       appBar: AppBar(
@@ -705,6 +728,14 @@ class _CountPageState extends State<CountPage> {
                           fontWeight: FontWeight.w700,
                         ),
                       ),
+                      if (_isBackfill(adjustment.date, adjustment.createdAt))
+                        BackfillBadge(
+                          daysEarlier: Dates.daysBetween(
+                            adjustment.date,
+                            SelectionState.today,
+                          ),
+                          compact: true,
+                        ),
                     ],
                   ),
                 ],
@@ -725,20 +756,51 @@ class _CountPageState extends State<CountPage> {
   Widget _buildDateBar(ThemeData theme, String date, bool isToday) {
     final mutedStyle =
         theme.textTheme.bodyLarge?.copyWith(color: AppTheme.muted);
+    final today = SelectionState.today;
+    final holiday = CnHolidays.of(date);
+    // 早于今天 = 正在补录；晚于今天 = 日期在未来，都值得提醒
+    final isBackdate = date.compareTo(today) < 0;
+    final isFuture = date.compareTo(today) > 0;
+
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
           children: [
             Icon(Icons.event_outlined, size: 22, color: AppTheme.muted),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(
-                isToday ? '$date（今天）' : date,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  color: isToday ? AppTheme.primary : AppTheme.danger,
-                ),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    isToday ? '$date（今天）' : date,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      color: isToday ? AppTheme.primary : AppTheme.danger,
+                    ),
+                  ),
+                  if (holiday != null)
+                    HolidayBadge(holiday, compact: true),
+                  if (isBackdate)
+                    BackfillBadge(
+                      daysEarlier: Dates.daysBetween(date, today),
+                      compact: true,
+                    ),
+                  if (isFuture)
+                    _miniTag('未来日期', AppTheme.danger),
+                ],
               ),
             ),
+            if (!isToday)
+              TextButton(
+                onPressed: () {
+                  widget.selection.resetDateToToday();
+                  setState(() => _minuteOfDay = AppClock.nowMinuteOfDay());
+                },
+                child: const Text('回今天'),
+              ),
             TextButton(onPressed: _changeDate, child: const Text('改日期')),
           ],
         ),
@@ -755,7 +817,44 @@ class _CountPageState extends State<CountPage> {
             TextButton(onPressed: _pickTime, child: const Text('改时间')),
           ],
         ),
+        if (isBackdate) ...[
+          const SizedBox(height: 8),
+          InfoBanner(
+            text: '正在补录 $date（今天 $today）。保存后这笔账算在 $date，'
+                '明细里会标「补录」，统计不会算到今天。',
+            color: AppTheme.danger,
+            icon: Icons.history,
+          ),
+        ],
+        if (isFuture) ...[
+          const SizedBox(height: 8),
+          InfoBanner(
+            text: '$date 在今天（$today）之后。确认是要预记明天的活吗？',
+            color: AppTheme.warning,
+            icon: Icons.event_available,
+          ),
+        ],
       ],
+    );
+  }
+
+  /// 极小的说明标签（不参与点击）。
+  Widget _miniTag(String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12,
+          color: color,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
     );
   }
 
@@ -1051,6 +1150,13 @@ class _CountPageState extends State<CountPage> {
     );
   }
 
+  /// 这条是不是"今天补录的前面日期"。
+  bool _isBackfill(String workDate, int createdAt) => BackfillRules.isBackfill(
+        workDate: workDate,
+        createdAtMillis: createdAt,
+        today: SelectionState.today,
+      );
+
   Widget _buildRecordRow(ThemeData theme, PieceRecord record) {
     return InkWell(
       onTap: _locked ? null : () => _editRecord(record),
@@ -1092,6 +1198,16 @@ class _CountPageState extends State<CountPage> {
                               fontWeight: FontWeight.w700,
                             ),
                           ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      if (_isBackfill(record.date, record.createdAt)) ...[
+                        BackfillBadge(
+                          daysEarlier: Dates.daysBetween(
+                            record.date,
+                            SelectionState.today,
+                          ),
+                          compact: true,
                         ),
                         const SizedBox(width: 8),
                       ],

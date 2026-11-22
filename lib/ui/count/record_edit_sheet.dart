@@ -5,8 +5,10 @@ import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/piece_record.dart';
 import '../../data/models/toy.dart';
+import '../../domain/holidays/cn_holidays.dart';
 import '../../domain/rules/overtime_rules.dart';
 import '../../services/app_services.dart';
+import '../common/date_picker_sheet.dart';
 import '../common/picker.dart';
 import '../common/ui_kit.dart';
 import '../theme.dart';
@@ -324,6 +326,18 @@ class _RecordEditSheetState extends State<_RecordEditSheet> {
                     label: Text(Dates.hhmm(_minuteOfDay)),
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            // 两个时间分开写清楚：改上面那排不会改「录入时间」
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                MutedText('录入于 ${record.createdAtLabel}'),
+                if (CnHolidays.of(_date) != null)
+                  HolidayBadge(CnHolidays.of(_date)!, compact: true),
               ],
             ),
             const SizedBox(height: 10),

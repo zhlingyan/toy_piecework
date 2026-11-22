@@ -1,12 +1,16 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/clock.dart';
 import '../../core/constants.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/piece_record.dart';
+import '../../domain/holidays/cn_holidays.dart';
+import '../../domain/rules/backfill_rules.dart';
 import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
+import '../common/record_time_sheet.dart';
 import '../common/ui_kit.dart';
 import '../theme.dart';
 
@@ -14,6 +18,14 @@ import '../theme.dart';
 ///
 /// 结算页看到的是「合并后的工序行」，对账时要的是「哪天、几点、干了什么活」。
 /// 这里按日期分组、日内按时间倒序，每条都带结算状态，方便当面和工人核对。
+///
+/// ## 两个时间必须分清
+///
+/// * **归属日期**（`date`）：这笔活算哪一天，分组、统计、结算都按它；
+/// * **录入时间**（`createdAt`）：什么时候按的保存键。
+///
+/// 今天录了 11 号的活 → 这笔显示在 **11 号**那一组下面（不是今天），
+/// 同时打上红色「补录」角标；点这一行能看到精确到秒的录入时间。
 class WorkerRecordsPage extends StatefulWidget {
   const WorkerRecordsPage({
     super.key,
@@ -37,17 +49,26 @@ class _DetailEntry {
   const _DetailEntry({
     required this.date,
     required this.minuteOfDay,
+    required this.createdAt,
     required this.title,
     required this.subtitle,
     required this.signedCents,
     required this.settled,
     this.tag,
+    this.remark = '',
     this.isPiece = true,
     this.overtime = false,
   });
 
+  /// 业务日期（归属日）。
   final String date;
+
+  /// 业务时刻。
   final int minuteOfDay;
+
+  /// 录入时间（毫秒时间戳），只用于审计展示。
+  final int createdAt;
+
   final String title;
   final String subtitle;
   final int signedCents;
@@ -55,12 +76,22 @@ class _DetailEntry {
 
   /// 小标签：加班倍率、调整项类型。
   final String? tag;
+  final String remark;
   final bool isPiece;
   final bool overtime;
 
   String get month => date.substring(0, 7);
 
   String get timeLabel => Dates.hhmm(minuteOfDay);
+
+  /// 是不是「今天补录的前面日期」。
+  bool isBackfill(String today) => BackfillRules.isBackfill(
+        workDate: date,
+        createdAtMillis: createdAt,
+        today: today,
+      );
+
+  int daysEarlier(String today) => Dates.daysBetween(date, today);
 }
 
 class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
@@ -103,8 +134,10 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
     final entries = <_DetailEntry>[
       for (final record in records)
         _DetailEntry(
-          date: record.date,
+          // 分组只用 record.date；createdAt 只进审计字段
+          date: record.workDate,
           minuteOfDay: record.minuteOfDay,
+          createdAt: record.createdAt,
           title: record.processSnapshot == Defaults.defaultProcess
               ? record.toyNameSnapshot
               : '${record.toyNameSnapshot} / ${record.processSnapshot}',
@@ -113,16 +146,19 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
           signedCents: record.subtotalCents,
           settled: settledMonths.contains(Dates.ymOfYmd(record.date)),
           tag: record.overtime ? '加班 ×${record.overtimeMultiplierLabel}' : null,
+          remark: record.remark,
           overtime: record.overtime,
         ),
       for (final adjustment in adjustments)
         _DetailEntry(
-          date: adjustment.date,
+          date: adjustment.workDate,
           minuteOfDay: adjustment.minuteOfDay,
+          createdAt: adjustment.createdAt,
           title: adjustment.type.label,
           subtitle: adjustment.summaryLabel,
           signedCents: adjustment.signedCents,
           settled: settledMonths.contains(Dates.ymOfYmd(adjustment.date)),
+          remark: adjustment.remark,
           isPiece: false,
         ),
     ];
@@ -138,6 +174,8 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
     });
     return entries;
   }
+
+  String get _today => Dates.ymd(AppClock.now());
 
   List<_DetailEntry> get _visible {
     final filter = _settledFilter;
@@ -161,9 +199,14 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
 
   int get _unsettledCents => _netCents - _settledCents;
 
+  /// 今天补录的笔数。
+  int get _backfillCount =>
+      _entries.where((entry) => entry.isBackfill(_today)).length;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final today = _today;
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.workerName} · 明细'),
@@ -177,7 +220,7 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
                 children: [
-                  _buildSummary(theme),
+                  _buildSummary(theme, today),
                   const SizedBox(height: 12),
                   _buildFilter(theme),
                   const SizedBox(height: 6),
@@ -195,16 +238,21 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
                     )
                   else
                     for (final group in _groupByDate(_visible).entries)
-                      _buildDayCard(theme, group.key, group.value),
-                  if (_entries.isNotEmpty)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 4),
-                      child: MutedText(
-                        '结算状态跟随「工人 + 月份」的标记。'
-                        '在工人结算弹层里标记已结算后，这里会同步更新。',
-                        align: TextAlign.center,
-                      ),
+                      _buildDayCard(theme, group.key, group.value, today),
+                  if (_entries.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    const MutedText(
+                      '结算状态跟随「工人 + 月份」的标记。'
+                      '在工人结算弹层里标记已结算后，这里会同步更新。',
+                      align: TextAlign.center,
                     ),
+                    const SizedBox(height: 6),
+                    const MutedText(
+                      '红色「补录」= 今天录入、但账算在更早的日期。'
+                      '点任意一条可以看到精确到秒的录入时间。',
+                      align: TextAlign.center,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -219,9 +267,10 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
     return groups;
   }
 
-  Widget _buildSummary(ThemeData theme) {
+  Widget _buildSummary(ThemeData theme, String today) {
     final settled = _settledCents;
     final unsettled = _unsettledCents;
+    final backfill = _backfillCount;
     return SectionCard(
       margin: EdgeInsets.zero,
       child: Column(
@@ -288,6 +337,25 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
               ),
             ],
           ),
+          // 补录笔数单独拎出来：对账时最容易被质疑的就是这几笔
+          if (backfill > 0) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const BackfillBadge(compact: true),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    '本区间有 $backfill 笔是今天补录的（下方红色高亮）',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: AppTheme.danger,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 10),
           Row(
             children: [
@@ -414,11 +482,30 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
     ThemeData theme,
     String date,
     List<_DetailEntry> entries,
+    String today,
   ) {
     final dayTotal = _sum(entries);
     final weekday = Dates.weekdayLabel(date);
+    final holiday = CnHolidays.of(date);
+    final backfillCount = entries.where((entry) => entry.isBackfill(today)).length;
+
     return SectionCard(
-      title: weekday.isEmpty ? date : '$date $weekday',
+      titleWidget: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            weekday.isEmpty ? date : '$date $weekday',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          if (holiday != null) HolidayBadge(holiday, compact: true),
+          if (backfillCount > 0)
+            BackfillBadge(compact: true),
+        ],
+      ),
       trailing: Text(
         '当日 ${Money.formatCentsSigned(dayTotal)}',
         style: theme.textTheme.bodyMedium?.copyWith(
@@ -430,104 +517,148 @@ class _WorkerRecordsPageState extends State<WorkerRecordsPage> {
         children: [
           for (var index = 0; index < entries.length; index++) ...[
             if (index > 0) const Divider(height: 16),
-            _buildEntryRow(theme, entries[index]),
+            _buildEntryRow(theme, entries[index], today),
           ],
         ],
       ),
     );
   }
 
-  Widget _buildEntryRow(ThemeData theme, _DetailEntry entry) {
+  Widget _buildEntryRow(ThemeData theme, _DetailEntry entry, String today) {
+    final backfill = entry.isBackfill(today);
     final amountColor = entry.isPiece
         ? AppTheme.primary
         : (entry.signedCents >= 0 ? AppTheme.success : AppTheme.danger);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 54,
+
+    final row = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 54,
+          child: Text(
+            entry.timeLabel,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: backfill ? AppTheme.danger : AppTheme.muted,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: 6,
+                runSpacing: 3,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (entry.overtime)
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: AppTheme.warning.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: Text(
+                        entry.tag ?? '加班',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.warning,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  if (backfill)
+                    BackfillBadge(
+                      daysEarlier: entry.daysEarlier(today),
+                      compact: true,
+                    ),
+                  Text(
+                    entry.title,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: backfill ? AppTheme.danger : null,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Wrap(
+                spacing: 6,
+                runSpacing: 3,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (entry.subtitle.isNotEmpty)
+                    Text(
+                      entry.subtitle,
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: AppTheme.muted),
+                    ),
+                  SettlementBadge(
+                    entry.settled
+                        ? SettlementStatus.settled
+                        : SettlementStatus.unsettled,
+                    compact: true,
+                  ),
+                  if (backfill)
+                    Text(
+                      '录入 ${Dates.shortMillis(entry.createdAt)}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: AppTheme.danger,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 6),
+        Flexible(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerRight,
             child: Text(
-              entry.timeLabel,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: AppTheme.muted,
+              Money.formatCentsSigned(entry.signedCents),
+              maxLines: 1,
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: amountColor,
                 fontWeight: FontWeight.w700,
               ),
             ),
           ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 3,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    if (entry.overtime)
-                      Container(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: AppTheme.warning.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                        child: Text(
-                          entry.tag ?? '加班',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppTheme.warning,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    Text(
-                      entry.title,
-                      style: theme.textTheme.bodyLarge
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 3,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    if (entry.subtitle.isNotEmpty)
-                      Text(
-                        entry.subtitle,
-                        style: theme.textTheme.bodyMedium
-                            ?.copyWith(color: AppTheme.muted),
-                      ),
-                    SettlementBadge(
-                      entry.settled
-                          ? SettlementStatus.settled
-                          : SettlementStatus.unsettled,
-                      compact: true,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 6),
-          Flexible(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerRight,
-              child: Text(
-                Money.formatCentsSigned(entry.signedCents),
-                maxLines: 1,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  color: amountColor,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ),
-        ],
+        ),
+      ],
+    );
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        // 点一条看「什么时候录的」：业务日期与录入时间摊开给人看
+        onTap: () => showRecordTimeSheet(
+          context,
+          title: entry.isPiece ? '计件时间详情' : '调整项时间详情',
+          workDate: entry.date,
+          minuteOfDay: entry.minuteOfDay,
+          createdAt: entry.createdAt,
+          remark: entry.remark,
+          workerName: widget.workerName,
+        ),
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: EdgeInsets.fromLTRB(backfill ? 8 : 0, 4, 0, 4),
+          decoration: backfill
+              ? BoxDecoration(
+                  // 只有左边框 + 浅红底：够醒目，又不会把整页刷成红色
+                  color: AppTheme.danger.withValues(alpha: 0.05),
+                  border: const Border(
+                    left: BorderSide(color: AppTheme.danger, width: 3),
+                  ),
+                )
+              : null,
+          child: row,
+        ),
       ),
     );
   }

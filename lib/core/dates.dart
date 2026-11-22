@@ -38,6 +38,54 @@ class Dates {
   static int daysInMonth(int year, int month) =>
       DateTime(year, month + 1, 0).day;
 
+  // ---- 时间戳（created_at / updated_at）----
+  //
+  // 存的是 `millisecondsSinceEpoch`，这里统一按**本地时区**还原，
+  // 供「这条是什么时候录进来的」展示。它只用于审计，绝不参与归集。
+
+  static DateTime dateTimeOfMillis(int millis) =>
+      DateTime.fromMillisecondsSinceEpoch(millis);
+
+  /// 毫秒时间戳 → 所在自然日 `YYYY-MM-DD`（本地时区）。
+  static String ymdOfMillis(int millis) => ymd(dateTimeOfMillis(millis));
+
+  /// 毫秒时间戳 → `YYYY-MM-DD HH:mm:ss`（本地时区）。
+  static String formatMillis(int millis) {
+    final t = dateTimeOfMillis(millis);
+    final h = t.hour.toString().padLeft(2, '0');
+    final m = t.minute.toString().padLeft(2, '0');
+    final s = t.second.toString().padLeft(2, '0');
+    return '${ymd(t)} $h:$m:$s';
+  }
+
+  /// 毫秒时间戳 → `MM-DD HH:mm`（列表里省地方用）。
+  static String shortMillis(int millis) {
+    final t = dateTimeOfMillis(millis);
+    final md = '${t.month.toString().padLeft(2, '0')}-'
+        '${t.day.toString().padLeft(2, '0')}';
+    final hm = '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+    return '$md $hm';
+  }
+
+  /// 两个 `YYYY-MM-DD` 相差多少天（后者减前者，同日为 0）。
+  static int daysBetween(String from, String to) {
+    final a = tryParseYmd(from);
+    final b = tryParseYmd(to);
+    if (a == null || b == null) return 0;
+    return dateOnly(b).difference(dateOnly(a)).inDays;
+  }
+
+  /// `2026-11-01 ~ 2026-11-30` 这种区间文案（单日只显示一天）。
+  static String rangeLabel(String start, String end) =>
+      start == end ? start : '$start ~ $end';
+
+  /// 中文月份标签：`2026-11` → `2026 年 11 月`。
+  static String monthLabel(String ym) {
+    if (!isValidYm(ym)) return ym;
+    return '${ym.substring(0, 4)} 年 ${int.parse(ym.substring(5, 7))} 月';
+  }
+
   /// 从 `YYYY-MM-DD` 取出 `YYYY-MM`。
   static String ymOfYmd(String ymd) => ymd.substring(0, 7);
 

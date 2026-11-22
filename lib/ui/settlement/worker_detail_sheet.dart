@@ -1,12 +1,14 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/constants.dart';
+import '../../core/clock.dart';
 import '../../core/dates.dart';
 import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/settlement.dart';
 import '../../data/models/worker.dart';
+import '../../domain/rules/backfill_rules.dart';
 import '../../domain/rules/settlement_rules.dart';
 import '../../services/app_services.dart';
 import '../common/export_sheet.dart';
@@ -170,10 +172,14 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
         .cast<Worker?>()
         .firstWhere((_) => true, orElse: () => null);
     final list = target == null ? workers : [target];
+    // 默认落到当前结算区间内：在历史区间里补录，钱必须留在这一期
+    final today = Dates.ymd(AppClock.now());
+    final defaultDate =
+        widget.range.contains(today) ? today : widget.range.end;
     final saved = await showAdjustmentSheet(
       context: context,
       services: widget.services,
-      defaultDate: Dates.ymd(DateTime.now()),
+      defaultDate: defaultDate,
       workers: list,
       defaultWorkerId: widget.worker.workerId,
     );
@@ -532,10 +538,29 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  Text(
-                    '${adjustment.date} ${adjustment.timeLabel}',
-                    style: theme.textTheme.bodyMedium
-                        ?.copyWith(color: AppTheme.muted),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 3,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        '${adjustment.date} ${adjustment.timeLabel}',
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(color: AppTheme.muted),
+                      ),
+                      if (BackfillRules.isBackfill(
+                        workDate: adjustment.date,
+                        createdAtMillis: adjustment.createdAt,
+                        today: Dates.ymd(AppClock.now()),
+                      ))
+                        BackfillBadge(
+                          daysEarlier: Dates.daysBetween(
+                            adjustment.date,
+                            Dates.ymd(AppClock.now()),
+                          ),
+                          compact: true,
+                        ),
+                    ],
                   ),
                 ],
               ),
