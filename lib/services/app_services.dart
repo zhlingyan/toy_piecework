@@ -6,6 +6,7 @@ import '../data/repositories/month_lock_repository.dart';
 import '../data/repositories/piece_record_repository.dart';
 import '../data/repositories/process_repository.dart';
 import '../data/repositories/settlement_entry_repository.dart';
+import '../data/repositories/settlement_history_repository.dart';
 import '../data/repositories/settlement_mark_repository.dart';
 import '../data/repositories/settlement_repository.dart';
 import '../data/repositories/toy_repository.dart';
@@ -36,19 +37,27 @@ class AppServices {
   AppServices({required this.db, required this.settings})
       : workers = WorkerRepository(db),
         toys = ToyRepository(db),
-        records = PieceRecordRepository(db),
-        adjustments = AdjustmentRepository(db),
+        records = PieceRecordRepository(
+          db,
+          history: SettlementHistoryRepository(db),
+        ),
+        adjustments = AdjustmentRepository(
+          db,
+          history: SettlementHistoryRepository(db),
+        ),
         processes = ProcessRepository(db),
         months = MonthLockRepository(db),
         settlements = SettlementRepository(db),
         settlementMarks = SettlementMarkRepository(db),
+        settlementHistory = SettlementHistoryRepository(db),
         backup = BackupService(db),
         legacy = LegacyImportService(db),
         reports = ReportService(db),
         csv = const CsvExportService(),
         payslips = const PayslipService() {
     cloud = CloudBackupService(db, backup, () => settings.lastCloudBackupAt);
-    settlementEntries = SettlementEntryRepository(db, settlementMarks);
+    settlementEntries =
+        SettlementEntryRepository(db, settlementMarks, settlementHistory);
   }
 
   final AppDatabase db;
@@ -64,6 +73,9 @@ class AppServices {
   final MonthLockRepository months;
   final SettlementRepository settlements;
   final SettlementMarkRepository settlementMarks;
+
+  /// 状态变更历史：只追加，供详情/历史面板查看，不参与金额与打印总表。
+  final SettlementHistoryRepository settlementHistory;
 
   /// 逐笔结算：在整月标记之上提供"这一笔已结/未结"的细粒度操作。
   late final SettlementEntryRepository settlementEntries;

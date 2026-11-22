@@ -9,6 +9,7 @@ import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../db/app_database.dart';
 import '../db/schema.dart';
+import '../models/settlement_event.dart';
 
 /// 备份文件的统计信息（恢复前预览、备份列表展示共用）。
 class BackupSummary {
@@ -23,6 +24,7 @@ class BackupSummary {
     required this.lockedMonthCount,
     this.processCount = 0,
     this.settlementCount = 0,
+    this.historyCount = 0,
     required this.minDate,
     required this.maxDate,
   });
@@ -41,6 +43,9 @@ class BackupSummary {
 
   /// 结算标记条数（v4 起才有；老备份为 0）。
   final int settlementCount;
+
+  /// 状态变更历史条数（v6 起才有；老备份为 0）。
+  final int historyCount;
 
   /// 流水日期跨度，用于恢复前让管理员确认「是不是这份账」。
   final String? minDate;
@@ -97,6 +102,7 @@ class BackupService {
     Tables.lockedMonths,
     Tables.processPresets,
     Tables.settlementMarks,
+    Tables.settlementHistory,
   ];
 
   /// 导出整本账。默认不含「删除已超 30 天」的流水，可在界面勾选包含。
@@ -130,6 +136,11 @@ class BackupService {
       Tables.settlementMarks,
       orderBy: 'month ASC, worker_id ASC',
     );
+    // 变更历史按 seq 原样导出：恢复后追加标识不重号、时间不被改写。
+    final history = await executor.query(
+      Tables.settlementHistory,
+      orderBy: 'seq ASC',
+    );
 
     return {
       'format': Defaults.backupFormat,
@@ -143,6 +154,7 @@ class BackupService {
         Tables.lockedMonths: locked.length,
         Tables.processPresets: processes.length,
         Tables.settlementMarks: settlementMarks.length,
+        Tables.settlementHistory: history.length,
       },
       'data': {
         Tables.workers: workers,
@@ -152,6 +164,7 @@ class BackupService {
         Tables.lockedMonths: locked,
         Tables.processPresets: processes,
         Tables.settlementMarks: settlementMarks,
+        Tables.settlementHistory: history,
       },
     };
   }
@@ -422,6 +435,32 @@ class BackupService {
           'locked_at': (row['locked_at'] as num?)?.toInt(),
           'unlocked_at': (row['unlocked_at'] as num?)?.toInt(),
         };
+      case Tables.settlementHistory:
+        // 老备份没有这张表，inspect 会给空列表；这里只处理确实带了历史的行。
+        // 所有字段都容忍缺失，避免 v6 早期备份缺列时整本账恢复不了。
+        final occurredAt = (row['occurred_at'] as num?)?.toInt() ?? 0;
+        final happenedAt = row['happened_at']?.toString() ?? '';
+        return {
+          'seq': (row['seq'] as num?)?.toInt() ?? index + 1,
+          'worker_id': requireString('worker_id'),
+          'action': row['action']?.toString() ==
+                  SettlementAction.unsettled.code
+              ? SettlementAction.unsettled.code
+              : SettlementAction.settled.code,
+          'scope': row['scope']?.toString() ==
+                  SettlementEventScope.entry.code
+              ? SettlementEventScope.entry.code
+              : SettlementEventScope.range.code,
+          'reason': row['reason']?.toString() ?? '',
+          'months': row['months']?.toString() ?? '',
+          'range_start': row['range_start']?.toString() ?? '',
+          'range_end': row['range_end']?.toString() ?? '',
+          'entry_label': row['entry_label']?.toString() ?? '',
+          'occurred_at': occurredAt,
+          'happened_at': happenedAt.isNotEmpty
+              ? happenedAt
+              : (occurredAt > 0 ? Dates.formatMillis(occurredAt) : ''),
+        };
       default:
         return row;
     }
@@ -450,6 +489,7 @@ class BackupService {
       adjustmentCount: payload[Tables.adjustments]?.length ?? 0,
       processCount: payload[Tables.processPresets]?.length ?? 0,
       settlementCount: payload[Tables.settlementMarks]?.length ?? 0,
+      historyCount: payload[Tables.settlementHistory]?.length ?? 0,
       lockedMonthCount: payload[Tables.lockedMonths]?.length ?? 0,
       minDate: minDate,
       maxDate: maxDate,

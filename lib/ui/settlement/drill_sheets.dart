@@ -14,6 +14,7 @@ import '../common/search_field.dart';
 import '../common/ui_kit.dart';
 import '../count/adjustment_sheet.dart';
 import '../theme.dart';
+import 'cancel_reason_dialog.dart';
 import 'worker_detail_sheet.dart';
 import 'worker_records_page.dart';
 
@@ -222,21 +223,28 @@ class _PeopleDrillSheetState extends State<_PeopleDrillSheet> {
       showToast(context, '「${worker.workerName}」本期没有可结算的账目', isError: true);
       return;
     }
-    final ok = await showConfirmDialog(
-      context,
-      title: settled
-          ? '把「${worker.workerName}」本期标记为已结算？'
-          : '取消「${worker.workerName}」的结算标记？',
-      message: settled
-          ? '覆盖 ${months.length} 个月（${_prettyMonths(months)}），'
-              '共 ${worker.recordCount} 笔、应付 ${Money.formatCents(worker.netCents)} 元。\n'
-              '只改结算状态，不改任何金额；之后补录的账也会算作已结算。'
-          : '取消后这 ${months.length} 个月会重新算作未结算（含已单独标记的笔）。\n'
-              '金额不变，随时可以再标回来。',
-      confirmText: settled ? '标记已结算' : '取消标记',
-      danger: !settled,
-    );
-    if (!ok) return;
+    String? reason;
+    if (settled) {
+      final ok = await showConfirmDialog(
+        context,
+        title: '把「${worker.workerName}」本期标记为已结算？',
+        message: '覆盖 ${months.length} 个月（${_prettyMonths(months)}），'
+            '共 ${worker.recordCount} 笔、应付 ${Money.formatCents(worker.netCents)} 元。\n'
+            '只改结算状态，不改任何金额；之后补录的账也会算作已结算。',
+        confirmText: '标记已结算',
+      );
+      if (!ok) return;
+    } else {
+      // 全员名单里取消结算同样走「理由选填」框，留空照常完成。
+      reason = await showCancelSettlementDialog(
+        context,
+        title: '取消「${worker.workerName}」的结算标记？',
+        message: '取消后这 ${months.length} 个月会重新算作未结算（含已单独标记的笔）。\n'
+            '金额不变，随时可以再标回来。\n'
+            '取消理由选填，留空也能完成。',
+      );
+      if (reason == null) return;
+    }
     setState(() => _busyId = worker.workerId);
     try {
       await widget.services.settlementEntries.markRange(
@@ -244,6 +252,7 @@ class _PeopleDrillSheetState extends State<_PeopleDrillSheet> {
         months: months,
         range: widget.range,
         settled: settled,
+        reason: reason,
       );
       widget.services.notifyDataChanged();
       await _load();

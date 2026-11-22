@@ -10,6 +10,7 @@ import 'package:toy_piecework/data/repositories/month_lock_repository.dart';
 import 'package:toy_piecework/data/repositories/piece_record_repository.dart';
 import 'package:toy_piecework/data/repositories/process_repository.dart';
 import 'package:toy_piecework/data/repositories/settlement_entry_repository.dart';
+import 'package:toy_piecework/data/repositories/settlement_history_repository.dart';
 import 'package:toy_piecework/data/repositories/settlement_mark_repository.dart';
 import 'package:toy_piecework/data/repositories/settlement_repository.dart';
 import 'package:toy_piecework/data/repositories/toy_repository.dart';
@@ -26,16 +27,24 @@ class Fixture {
   Fixture._(this.db, this._tempDir)
       : workers = WorkerRepository(db),
         toys = ToyRepository(db),
-        records = PieceRecordRepository(db),
-        adjustments = AdjustmentRepository(db),
+        records = PieceRecordRepository(
+          db,
+          history: SettlementHistoryRepository(db),
+        ),
+        adjustments = AdjustmentRepository(
+          db,
+          history: SettlementHistoryRepository(db),
+        ),
         processes = ProcessRepository(db),
         months = MonthLockRepository(db),
         settlements = SettlementRepository(db),
         settlementMarks = SettlementMarkRepository(db),
+        settlementHistory = SettlementHistoryRepository(db),
         backup = BackupService(db),
         legacy = LegacyImportService(db),
         reports = ReportService(db) {
-    settlementEntries = SettlementEntryRepository(db, settlementMarks);
+    settlementEntries =
+        SettlementEntryRepository(db, settlementMarks, settlementHistory);
   }
 
   static Future<Fixture> create() async {
@@ -59,6 +68,7 @@ class Fixture {
   final MonthLockRepository months;
   final SettlementRepository settlements;
   final SettlementMarkRepository settlementMarks;
+  final SettlementHistoryRepository settlementHistory;
   late final SettlementEntryRepository settlementEntries;
   final BackupService backup;
   final LegacyImportService legacy;

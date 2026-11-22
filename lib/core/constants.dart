@@ -11,6 +11,7 @@ class Tables {
   static const String lockedMonths = 'locked_months';
   static const String processPresets = 'process_presets';
   static const String settlementMarks = 'settlement_marks';
+  static const String settlementHistory = 'settlement_history';
 }
 
 /// 调整项类型：统一录正数，按 [sign] 决定加减。
@@ -193,10 +194,10 @@ class Defaults {
 
   /// 备份文件格式标识与版本。
   ///
-  /// v3：调整项新增工时/时薪，且多了 `process_presets` 表。
-  /// v4：工人档案新增电话/身份证号，且多了 `settlement_marks` 表。
-  /// 新版本能读 v1/v2/v3（缺字段按默认值补齐），老版本读 v4 会直接拒绝，
-  /// 避免「静默丢字段」这种最难查的问题。
+  /// v5：流水与调整项新增单笔结算时间 `settled_at`。
+  /// v6：新增 `settlement_history`（状态变更只追加留痕）。
+  /// 新版本能读 v1–v5（缺字段按默认值补齐、缺表按空处理），
+  /// 老版本读 v6 会直接拒绝，避免「静默丢字段」这种最难查的问题。
   static const String backupFormat = 'toy_piecework_backup';
-  static const int backupVersion = 5;
+  static const int backupVersion = 6;
 }

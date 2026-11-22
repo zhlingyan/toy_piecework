@@ -1,6 +1,6 @@
 import '../../core/constants.dart';
 
-/// 数据库结构定义（版本 5）。
+/// 数据库结构定义（版本 6）。
 ///
 /// 索引原则：日期、工人、删除标记三条高频过滤路径全部建索引。
 /// 不启用外键约束——历史流水必须能在档案归档后继续存在，
@@ -8,7 +8,7 @@ import '../../core/constants.dart';
 class Schema {
   Schema._();
 
-  static const int version = 5;
+  static const int version = 6;
 
   static const List<String> createStatements = [
     '''
@@ -111,6 +111,24 @@ class Schema {
       PRIMARY KEY (worker_id, month)
     )
     ''',
+    // 状态变更历史：只追加，不覆盖。`seq` 自增即「第几次变更」的标识，
+    // `happened_at` 是精确到秒的时间文本，取消理由选填。
+    // 这张表完全不参与金额计算与打印总表，只在详情/历史面板里查。
+    '''
+    CREATE TABLE ${Tables.settlementHistory} (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      worker_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      months TEXT NOT NULL DEFAULT '',
+      range_start TEXT NOT NULL DEFAULT '',
+      range_end TEXT NOT NULL DEFAULT '',
+      entry_label TEXT NOT NULL DEFAULT '',
+      occurred_at INTEGER NOT NULL,
+      happened_at TEXT NOT NULL
+    )
+    ''',
     // ---- 索引 ----
     'CREATE INDEX idx_workers_archived ON ${Tables.workers}(is_archived)',
     'CREATE INDEX idx_workers_code ON ${Tables.workers}(code)',
@@ -127,6 +145,8 @@ class Schema {
     'CREATE INDEX idx_settlement_month ON ${Tables.settlementMarks}(month)',
     'CREATE INDEX idx_records_settled ON ${Tables.pieceRecords}(settled_at)',
     'CREATE INDEX idx_adjustments_settled ON ${Tables.adjustments}(settled_at)',
+    'CREATE INDEX idx_settlement_history_worker '
+        'ON ${Tables.settlementHistory}(worker_id, seq)',
   ];
 
   /// 恢复/导入前清空用，顺序无关（无外键）。
@@ -138,6 +158,7 @@ class Schema {
     'DELETE FROM ${Tables.lockedMonths}',
     'DELETE FROM ${Tables.processPresets}',
     'DELETE FROM ${Tables.settlementMarks}',
+    'DELETE FROM ${Tables.settlementHistory}',
   ];
 
   /// 预置常用工序。
@@ -246,5 +267,31 @@ class Schema {
     'ALTER TABLE ${Tables.adjustments} ADD COLUMN settled_at INTEGER',
     'CREATE INDEX idx_records_settled ON ${Tables.pieceRecords}(settled_at)',
     'CREATE INDEX idx_adjustments_settled ON ${Tables.adjustments}(settled_at)',
+  ];
+
+  /// v5 → v6：结算状态变更历史（只追加）。
+  ///
+  /// * 新表默认为空：升级前的历史操作没有留痕，不编造记录；
+  /// * 不改 `settlement_marks` / `settled_at` 的任何既有值，
+  ///   所以升级后每个人的结算状态、金额、笔数与升级前**完全一致**；
+  /// * 老备份（v5 及更早）缺这张表，恢复时按空表处理，不会报错。
+  static const List<String> migrateV5ToV6 = [
+    '''
+    CREATE TABLE ${Tables.settlementHistory} (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      worker_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      months TEXT NOT NULL DEFAULT '',
+      range_start TEXT NOT NULL DEFAULT '',
+      range_end TEXT NOT NULL DEFAULT '',
+      entry_label TEXT NOT NULL DEFAULT '',
+      occurred_at INTEGER NOT NULL,
+      happened_at TEXT NOT NULL
+    )
+    ''',
+    'CREATE INDEX idx_settlement_history_worker '
+        'ON ${Tables.settlementHistory}(worker_id, seq)',
   ];
 }

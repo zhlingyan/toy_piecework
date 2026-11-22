@@ -7,6 +7,7 @@ import '../../core/failures.dart';
 import '../../core/money.dart';
 import '../../data/models/adjustment.dart';
 import '../../data/models/settlement.dart';
+import '../../data/models/settlement_event.dart';
 import '../../data/models/worker.dart';
 import '../../domain/rules/backfill_rules.dart';
 import '../../domain/rules/price_rules.dart';
@@ -16,6 +17,8 @@ import '../common/export_sheet.dart';
 import '../common/ui_kit.dart';
 import '../count/adjustment_sheet.dart';
 import '../theme.dart';
+import 'cancel_reason_dialog.dart';
+import 'settlement_history_sheet.dart';
 import 'worker_records_page.dart';
 
 /// 单人结算明细：计件分组（按单价拆行）+ 调整项增删改。
@@ -71,6 +74,10 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
   bool _buildingPayslip = false;
   bool _marking = false;
 
+  /// 当前状态标识：最近一次变更 + 累计变更次数（历史表只追加，不覆盖）。
+  SettlementEvent? _latestEvent;
+  int _historyCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -88,6 +95,10 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
       workerId: widget.worker.workerId,
     );
     final toys = await widget.services.toys.listAll();
+    final events = await widget.services.settlementHistory
+        .listForWorker(widget.worker.workerId, limit: 1);
+    final count = await widget.services.settlementHistory
+        .countForWorker(widget.worker.workerId);
     if (!mounted) return;
     setState(() {
       _adjustments = adjustments;
@@ -95,6 +106,8 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
       _worker = fresh.workers.isEmpty ? widget.worker : fresh.workers.first;
       _basePrices = {for (final toy in toys) toy.id: toy.unitPriceTenThousandth};
       _locked = widget.range.months.any(lockedMonths.contains);
+      _latestEvent = events.isEmpty ? null : events.first;
+      _historyCount = count;
       _loading = false;
     });
   }
@@ -118,6 +131,7 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
   ///
   /// 只改状态，不动任何金额；因此即使月份已锁账也允许操作
   /// （锁账是防改账，结算是记录「钱已发」）。
+  /// 取消时会追加一条变更历史，**理由选填**：留空返回空串，照常完成。
   Future<void> _toggleSettled() async {
     if (_marking) return;
     final months = _activeMonths;
@@ -129,21 +143,30 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
     final prettyMonths = months
         .map((month) => '${month.substring(0, 4)}年${int.parse(month.substring(5, 7))}月')
         .join('、');
-    final ok = await showConfirmDialog(
-      context,
-      title: settle ? '标记 $prettyMonths 已结算？' : '取消已结算标记？',
-      message: settle
-          ? '只做状态标记，不改金额、不影响计件与调整项。\n'
-              '本期应付 ${Money.formatCents(_worker.netCents)} 元，'
-              '其中未结 ${Money.formatCents(_worker.unsettledCents)} 元。\n'
-              '标记后会归入「已结算」，方便和还没发钱的工人区分开；'
-              '只想结其中几笔，请去「详细明细」逐笔标。'
-          : '取消后 $prettyMonths 会重新算作「未结算」（含已单独标记的笔数）。'
-              '金额不变，随时可以再标记回来。',
-      confirmText: settle ? '标记已结算' : '取消标记',
-      danger: !settle,
-    );
-    if (!ok) return;
+    String? reason;
+    if (settle) {
+      final ok = await showConfirmDialog(
+        context,
+        title: '标记 $prettyMonths 已结算？',
+        message: '只做状态标记，不改金额、不影响计件与调整项。\n'
+            '本期应付 ${Money.formatCents(_worker.netCents)} 元，'
+            '其中未结 ${Money.formatCents(_worker.unsettledCents)} 元。\n'
+            '标记后会归入「已结算」，方便和还没发钱的工人区分开；'
+            '只想结其中几笔，请去「详细明细」逐笔标。',
+        confirmText: '标记已结算',
+      );
+      if (!ok) return;
+    } else {
+      reason = await showCancelSettlementDialog(
+        context,
+        title: '取消已结算标记？',
+        message: '取消后 $prettyMonths 会重新算作「未结算」（含已单独标记的笔数）。'
+            '金额不变，随时可以再标记回来。\n'
+            '可以填一句取消理由方便以后查账，也可以直接留空。',
+      );
+      // null = 用户放弃取消；空串 = 确认但不填理由，两者必须区分开。
+      if (reason == null) return;
+    }
     setState(() => _marking = true);
     try {
       await widget.services.settlementEntries.markRange(
@@ -151,6 +174,7 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
         months: months,
         range: widget.range,
         settled: settle,
+        reason: reason,
       );
       widget.services.notifyDataChanged();
       await _load();
@@ -162,6 +186,79 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
     } finally {
       if (mounted) setState(() => _marking = false);
     }
+  }
+
+  /// 打开完整变更历史（审计视图），只在详情/历史面板展示。
+  Future<void> _openHistory() async {
+    await showSettlementHistorySheet(
+      context: context,
+      services: widget.services,
+      workerId: widget.worker.workerId,
+      workerName: widget.worker.workerName,
+      workerCode: widget.worker.workerCode,
+      currentStatus: _status,
+    );
+    if (mounted) await _load();
+  }
+
+  /// 当前状态标识：状态 + 累计变更次数 + 最近一次（精确到秒）。
+  Widget _buildStatusTrailCard(ThemeData theme) {
+    final latest = _latestEvent;
+    final accent = _status == SettlementStatus.settled
+        ? AppTheme.success
+        : (_status == SettlementStatus.partial
+            ? AppTheme.warning
+            : AppTheme.muted);
+    return Container(
+      key: const ValueKey('detail-status-trail'),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.flag_outlined, size: 18, color: accent),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '当前状态：${_status.label}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: accent,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _historyCount == 0
+                ? '共 0 次变更 · 还没标记过结算状态'
+                : '共 $_historyCount 次变更 · 最近 ${latest!.signature} '
+                    '${latest.action.label} 于 ${latest.timeText}',
+            maxLines: 2,
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: AppTheme.muted, height: 1.4),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              key: const ValueKey('detail-open-history'),
+              onPressed: _openHistory,
+              icon: const Icon(Icons.history, size: 18),
+              label: const Text('变更历史'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _openRecords() async {
@@ -355,6 +452,8 @@ class _WorkerDetailSheetState extends State<_WorkerDetailSheet> {
                 : ListView(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
                     children: [
+                      _buildStatusTrailCard(theme),
+                      const SizedBox(height: 12),
                       // 两个主动作：看逐条明细、标记结算状态
                       Wrap(
                         spacing: 10,

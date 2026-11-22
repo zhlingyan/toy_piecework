@@ -10,8 +10,10 @@ import '../../domain/rules/lock_rules.dart';
 import '../../domain/rules/trash_rules.dart';
 import '../db/app_database.dart';
 import '../models/piece_record.dart';
+import '../models/settlement_event.dart';
 import '../models/toy.dart';
 import '../models/worker.dart';
+import 'settlement_history_repository.dart';
 
 /// 计件流水仓储。
 ///
@@ -20,9 +22,15 @@ import '../models/worker.dart';
 /// 2. 姓名/玩具/工序/单价一律写快照，档案后续变动不回溯历史；
 /// 3. 永不物理删除，只写 `deleted_at`。
 class PieceRecordRepository {
-  PieceRecordRepository(this._db);
+  PieceRecordRepository(this._db, {SettlementHistoryRepository? history}) {
+    _history = history;
+  }
 
   final AppDatabase _db;
+
+  /// 可选：传入后，录入即结算 / 编辑改结算状态也会追加历史（同事务）。
+  /// 不传（如某些单元测试）则只写状态，不记历史，行为与升级前一致。
+  late final SettlementHistoryRepository? _history;
 
   Future<T> _run<T>(
     DatabaseExecutor? ex,
@@ -116,6 +124,18 @@ class PieceRecordRepository {
         final existing = await findById(record.id, ex: executor);
         if (existing != null) return existing;
         throw const ValidationFailure('保存失败，请重试');
+      }
+      if (settled) {
+        // 「录入时即结算」也是一次结算动作，同样追加历史（理由为空）。
+        await _history?.append(
+          workerId: worker.id,
+          action: SettlementAction.settled,
+          scope: SettlementEventScope.entry,
+          months: [Dates.ymOfYmd(date)],
+          entryLabel: '$date · 计件流水',
+          occurredAt: now,
+          ex: executor,
+        );
       }
       return record;
     });
@@ -219,6 +239,18 @@ class PieceRecordRepository {
         where: 'id = ?',
         whereArgs: [updated.id],
       );
+      final wasSettled = current.settledAt != null;
+      if (settled != null && settled != wasSettled) {
+        await _history?.append(
+          workerId: current.workerId,
+          action: settled ? SettlementAction.settled : SettlementAction.unsettled,
+          scope: SettlementEventScope.entry,
+          months: [Dates.ymOfYmd(newDate)],
+          entryLabel: '$newDate · 计件流水',
+          occurredAt: updated.updatedAt,
+          ex: executor,
+        );
+      }
       return updated;
     });
   }
@@ -250,6 +282,18 @@ class PieceRecordRepository {
         where: 'id = ?',
         whereArgs: [id],
       );
+      final wasSettled = current.settledAt != null;
+      if (settled != wasSettled) {
+        await _history?.append(
+          workerId: current.workerId,
+          action: settled ? SettlementAction.settled : SettlementAction.unsettled,
+          scope: SettlementEventScope.entry,
+          months: [Dates.ymOfYmd(current.date)],
+          entryLabel: '${current.date} · 计件流水',
+          occurredAt: now,
+          ex: executor,
+        );
+      }
     });
   }
 

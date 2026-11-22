@@ -629,4 +629,112 @@ void main() {
         .single;
     expect(after.settlementStatus.label, '已结算');
   });
+
+  test('v5 库升级到 v6：新增历史表为空，老账状态与金额一分不变', () async {
+    final v5Path = p.join(tempDir.path, 'v5.db');
+    final v5 = await databaseFactoryFfi.openDatabase(
+      v5Path,
+      options: OpenDatabaseOptions(
+        version: 5,
+        onCreate: (db, version) async {
+          for (final statement in v1Statements) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV1ToV2) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV2ToV3) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV3ToV4) {
+            await db.execute(statement);
+          }
+          for (final statement in Schema.migrateV4ToV5) {
+            await db.execute(statement);
+          }
+        },
+      ),
+    );
+    await v5.insert('workers', {
+      'id': 'w1',
+      'code': 'W001',
+      'name': '张三',
+      'phone': '',
+      'id_card': '',
+      'pinyin_initials': 'ZS',
+      'is_archived': 0,
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    await v5.insert('piece_records', {
+      'id': 'r1',
+      'date': '2026-06-10',
+      'worker_id': 'w1',
+      'toy_id': 't1',
+      'worker_name_snapshot': '张三',
+      'toy_name_snapshot': '小熊',
+      'process_snapshot': '整件',
+      'unit_price_snapshot': 2000,
+      'quantity': 100,
+      'subtotal_cents': 2000,
+      'remark': '',
+      'created_at': 1,
+      'updated_at': 1,
+    });
+    await v5.insert('settlement_marks', {
+      'worker_id': 'w1',
+      'month': '2026-06',
+      'is_settled': 1,
+      'settled_at': 2,
+      'updated_at': 2,
+    });
+    await v5.close();
+
+    final appDb = await AppDatabase.open(
+      path: v5Path,
+      factoryOverride: databaseFactoryFfi,
+    );
+    addTearDown(() async => appDb.close());
+
+    expect(await appDb.raw.getVersion(), Schema.version);
+    final columns = await appDb.raw.rawQuery(
+      'PRAGMA table_info(settlement_history)',
+    );
+    expect(columns.map((c) => c['name']), containsAll(<String>[
+      'seq',
+      'worker_id',
+      'action',
+      'scope',
+      'reason',
+      'occurred_at',
+      'happened_at',
+    ]));
+    // 升级前的操作没有留痕，绝不编造历史
+    expect(await appDb.raw.query('settlement_history'), isEmpty);
+
+    final record = (await appDb.raw.query('piece_records')).single;
+    expect(record['subtotal_cents'], 2000, reason: '升级不动金额');
+    expect(record['settled_at'], isNull);
+    final settled = (await SettlementRepository(appDb)
+            .settle(DateRange.of('2026-06-01', '2026-06-30')))
+        .workers
+        .single;
+    expect(settled.settlementStatus.label, '已结算',
+        reason: '整月标记仍然有效');
+
+    // 新表可写，且 seq 从 1 开始作为追加标识
+    await appDb.raw.insert('settlement_history', {
+      'worker_id': 'w1',
+      'action': 'settled',
+      'scope': 'range',
+      'reason': '',
+      'months': '2026-06',
+      'range_start': '2026-06-01',
+      'range_end': '2026-06-30',
+      'entry_label': '',
+      'occurred_at': 123,
+      'happened_at': '2026-06-10 08:00:00',
+    });
+    expect((await appDb.raw.query('settlement_history')).single['seq'], 1);
+  });
 }

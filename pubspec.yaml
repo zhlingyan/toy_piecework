@@ -1,7 +1,7 @@
 name: toy_piecework
 description: "玩具厂计件计数与工资结算（离线优先，单管理员版）"
 publish_to: 'none'
-version: 1.6.0+7
+version: 1.7.0+8
 
 environment:
   sdk: ^3.14.0

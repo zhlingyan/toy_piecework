@@ -10,15 +10,22 @@ import '../../domain/rules/lock_rules.dart';
 import '../../domain/rules/trash_rules.dart';
 import '../db/app_database.dart';
 import '../models/adjustment.dart';
+import '../models/settlement_event.dart';
 import '../models/worker.dart';
+import 'settlement_history_repository.dart';
 
 /// 调整项仓储：补贴 / 计时 / 扣款 / 预支。
 ///
 /// 金额恒存正数，方向由类型决定；备注必填，方便月底和工人对账。
 class AdjustmentRepository {
-  AdjustmentRepository(this._db);
+  AdjustmentRepository(this._db, {SettlementHistoryRepository? history}) {
+    _history = history;
+  }
 
   final AppDatabase _db;
+
+  /// 可选：录入即结算 / 编辑改结算状态时追加历史（同事务）。
+  late final SettlementHistoryRepository? _history;
 
   Future<T> _run<T>(
     DatabaseExecutor? ex,
@@ -120,6 +127,17 @@ class AdjustmentRepository {
         if (existing != null) return existing;
         throw const ValidationFailure('保存失败，请重试');
       }
+      if (settled) {
+        await _history?.append(
+          workerId: worker.id,
+          action: SettlementAction.settled,
+          scope: SettlementEventScope.entry,
+          months: [Dates.ymOfYmd(date)],
+          entryLabel: '$date · ${type.label}',
+          occurredAt: now,
+          ex: executor,
+        );
+      }
       return adjustment;
     });
   }
@@ -186,6 +204,18 @@ class AdjustmentRepository {
         where: 'id = ?',
         whereArgs: [updated.id],
       );
+      final wasSettled = current.settledAt != null;
+      if (settled != null && settled != wasSettled) {
+        await _history?.append(
+          workerId: current.workerId,
+          action: settled ? SettlementAction.settled : SettlementAction.unsettled,
+          scope: SettlementEventScope.entry,
+          months: [Dates.ymOfYmd(newDate)],
+          entryLabel: '$newDate · ${updated.type.label}',
+          occurredAt: updated.updatedAt,
+          ex: executor,
+        );
+      }
       return updated;
     });
   }
@@ -211,6 +241,18 @@ class AdjustmentRepository {
         where: 'id = ?',
         whereArgs: [id],
       );
+      final wasSettled = current.settledAt != null;
+      if (settled != wasSettled) {
+        await _history?.append(
+          workerId: current.workerId,
+          action: settled ? SettlementAction.settled : SettlementAction.unsettled,
+          scope: SettlementEventScope.entry,
+          months: [Dates.ymOfYmd(current.date)],
+          entryLabel: '${current.date} · ${current.type.label}',
+          occurredAt: now,
+          ex: executor,
+        );
+      }
     });
   }
 

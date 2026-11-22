@@ -109,6 +109,15 @@ void main() {
     return result.workers.isEmpty ? 0 : result.workers.first.netCents / 100;
   }
 
+  /// 汇总卡「未结算 / 已结算」小卡里的人数文本。
+  ///
+  /// v1.7 起状态筛选收进了单一按钮面板，列表里不再有「未结算 2」这类 Chip，
+  /// 但汇总数字仍是全员口径，用这块验证实时刷新最稳。
+  Finder summaryPeople(String key, int count) => find.descendant(
+        of: find.byKey(ValueKey(key)),
+        matching: find.text('$count 人'),
+      );
+
   testWidgets('按工人结算支持姓名 / 工号查找，无匹配有空状态并可清空', (tester) async {
     useTallView(tester);
     await pumpPage(tester);
@@ -200,7 +209,7 @@ void main() {
     useTallView(tester);
     await pumpPage(tester);
 
-    expect(find.text('未结算 2'), findsOneWidget);
+    expect(summaryPeople('summary-unsettled', 2), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('summary-unsettled')));
     await settle(tester);
@@ -230,12 +239,12 @@ void main() {
     expect(liWorker.isFullySettled, isTrue);
 
     // 汇总卡实时刷新（弹层还开着，后面的页面已重算）
-    expect(find.text('未结算 1'), findsOneWidget);
+    expect(summaryPeople('summary-unsettled', 1), findsOneWidget);
 
     await tester.tap(find.byIcon(Icons.close));
     await settle(tester);
-    expect(find.text('未结算 1'), findsOneWidget);
-    expect(find.text('已结算 2'), findsOneWidget);
+    expect(summaryPeople('summary-unsettled', 1), findsOneWidget);
+    expect(summaryPeople('summary-settled', 2), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

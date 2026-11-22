@@ -8,6 +8,7 @@ import '../../data/models/settlement.dart';
 import '../../domain/pinyin/pinyin_helper.dart';
 import '../../domain/rules/date_periods.dart';
 import '../../domain/rules/settlement_rules.dart';
+import '../../domain/rules/worker_sort.dart';
 import '../../services/app_services.dart';
 import '../../state/selection_state.dart';
 import '../common/export_sheet.dart';
@@ -19,6 +20,7 @@ import '../reports/annual_page.dart';
 import '../theme.dart';
 import '../trash/trash_page.dart';
 import 'drill_sheets.dart';
+import 'worker_view_sheet.dart';
 import 'worker_detail_sheet.dart';
 
 /// 结算页：多维区间 + 月度锁账 + 按工人应付。
@@ -38,8 +40,9 @@ class _SettlementPageState extends State<SettlementPage> {
   bool _loading = true;
   int _loadedVersion = -1;
 
-  /// 结算状态筛选：null = 全部。
-  SettlementStatus? _statusFilter;
+  /// 「按工人结算」的排序 + 已结/未结口径，统一由单一按钮面板维护。
+  /// 默认「按金额从高到低 + 全部」，与升级前列表排布最接近。
+  WorkerViewOptions _viewOptions = const WorkerViewOptions();
 
   /// 按工人结算的查找框：姓名 / 工号 / 拼音首字母。
   final TextEditingController _workerSearch = TextEditingController();
@@ -88,16 +91,25 @@ class _SettlementPageState extends State<SettlementPage> {
     });
   }
 
-  /// 当前筛选（状态 + 查找）下要展示的工人。
+  /// 固定管线：状态筛选 → 查找过滤 → 排序（只改顺序、不改集合）。
+  ///
+  /// 汇总卡一律取 `result` 全员口径，不经过这里，
+  /// 所以筛掉几个人、换个排序都不会让「合计 = 已结 + 未结」对不上。
   List<WorkerSettlement> get _visibleWorkers {
     final result = _result;
     if (result == null) return const [];
-    final query = _workerSearch.text.trim();
-    final byStatus = result.filterBy(_statusFilter);
-    if (query.isEmpty) return byStatus;
-    return byStatus
-        .where((worker) => _matchesWorker(worker, query))
-        .toList(growable: false);
+    final query = _workerQuery;
+    final byStatus = result.filterBy(_viewOptions.status);
+    final filtered = query.isEmpty
+        ? byStatus
+        : byStatus
+            .where((worker) => _matchesWorker(worker, query))
+            .toList(growable: false);
+    return sortWorkers(
+      filtered,
+      sort: _viewOptions.sort,
+      amountDesc: _viewOptions.amountDesc,
+    );
   }
 
   /// 姓名 / 工号 / 首字母任一命中。
@@ -116,6 +128,20 @@ class _SettlementPageState extends State<SettlementPage> {
   void _clearWorkerSearch() {
     _workerSearch.clear();
     setState(() {});
+  }
+
+  /// 单一按钮入口：排序方式 + 已结/未结，选完立刻生效。
+  Future<void> _openViewOptions() async {
+    final result = _result;
+    if (result == null) return;
+    await showWorkerViewSheet(
+      context: context,
+      current: _viewOptions,
+      allCount: result.workers.length,
+      settledCount: result.settledWorkerCount,
+      unsettledCount: result.unsettledWorkerCount,
+      onChanged: (next) => setState(() => _viewOptions = next),
+    );
   }
 
   /// 切换区间：锁账折叠状态按新区间重新自动判定。
@@ -378,20 +404,30 @@ class _SettlementPageState extends State<SettlementPage> {
                         : Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              _buildStatusFilter(theme, result),
-                              const SizedBox(height: 8),
-                              SearchField(
-                                key: const ValueKey('settlement-worker-search'),
-                                controller: _workerSearch,
-                                hintText: '查找：输入工人姓名或工号',
-                                onChanged: (_) => setState(() {}),
+                              // 查找 + 单一「排序 / 筛选」按钮：两个入口并排，
+                              // 不再散落状态 Chip；三者（状态/查找/排序）叠加生效。
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Expanded(
+                                    child: SearchField(
+                                      key: const ValueKey(
+                                          'settlement-worker-search'),
+                                      controller: _workerSearch,
+                                      hintText: '查找：输入工人姓名或工号',
+                                      onChanged: (_) => setState(() {}),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  _buildViewButton(theme),
+                                ],
                               ),
                               if (_workerQuery.isNotEmpty) ...[
                                 const SizedBox(height: 4),
                                 SearchMatchHint(
                                   query: _workerQuery,
                                   text: '匹配到 ${_visibleWorkers.length}/'
-                                      '${result.filterBy(_statusFilter).length} 人',
+                                      '${result.filterBy(_viewOptions.status).length} 人',
                                   onClear: _clearWorkerSearch,
                                 ),
                               ],
@@ -774,11 +810,39 @@ class _SettlementPageState extends State<SettlementPage> {
       );
     }
     return EmptyState(
-      title: _statusFilter == SettlementStatus.unsettled
+      title: _viewOptions.status == SettlementStatus.unsettled
           ? '这个区间没有未结算的账'
           : '这个区间没有已结算的账',
-      hint: '换一个筛选看看，或在工人明细里标记结算状态',
+      hint: '点右上角「排序 / 筛选」换个状态，或清空查找词',
       icon: Icons.filter_alt_off_outlined,
+    );
+  }
+
+  /// 单一入口按钮：文案直接反映当前排序 + 状态口径。
+  ///
+  /// 限宽 + FittedBox：1.6 倍字号下「金额↓ · 未结」也不会把查找框挤出去。
+  Widget _buildViewButton(ThemeData theme) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 152, minHeight: 44),
+      child: OutlinedButton.icon(
+        key: const ValueKey('worker-view-button'),
+        onPressed: _openViewOptions,
+        icon: const Icon(Icons.tune, size: 18),
+        label: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(
+            _viewOptions.summary,
+            maxLines: 1,
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(fontWeight: FontWeight.w600),
+          ),
+        ),
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          visualDensity: VisualDensity.compact,
+        ),
+      ),
     );
   }
 
@@ -876,38 +940,8 @@ class _SettlementPageState extends State<SettlementPage> {
     );
   }
 
-  /// 全部 / 未结算 / 已结算 三个筛选片。
-  Widget _buildStatusFilter(ThemeData theme, SettlementResult result) {
-    final items = <({SettlementStatus? status, String label, int count})>[
-      (status: null, label: '全部', count: result.workers.length),
-      (
-        status: SettlementStatus.unsettled,
-        label: '未结算',
-        count: result.unsettledWorkerCount,
-      ),
-      (
-        status: SettlementStatus.settled,
-        label: '已结算',
-        count: result.settledWorkerCount,
-      ),
-    ];
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          for (final item in items) ...[
-            ChoiceChip(
-              label: Text('${item.label} ${item.count}'),
-              selected: _statusFilter == item.status,
-              onSelected: (_) => setState(() => _statusFilter = item.status),
-            ),
-            const SizedBox(width: 8),
-          ],
-        ],
-      ),
-    );
-  }
-
+  /// 「全部 / 已结 / 未结」与三种排序已合并到单一按钮面板
+  /// （见 `worker_view_sheet.dart`），这里不再平铺筛选片。
   /// 汇总小项。给了 [onTap] 就是可点下钻的入口（带箭头 + 主色数字）。
   Widget _miniStat(String label, String value, {Key? key, VoidCallback? onTap}) {
     return Builder(
